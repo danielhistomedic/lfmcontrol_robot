@@ -1,19 +1,11 @@
 
 Imports System.IO
 Imports System.Data
-Imports System.Collections.Generic
-'Imports System.Messaging
-'Imports ThoughtWorks.QRCode
-'Imports ThoughtWorks.QRCode.Codec
-'Imports ThoughtWorks.QRCode.Codec.Data
 
 Imports System.Net
-Imports System.Net.Http
 Imports System.Net.NetworkInformation
-Imports System.Diagnostics
 Imports CrystalDecisions.Shared
 Imports Newtonsoft.Json
-Imports System.Text
 
 Public Class Funciones
 
@@ -350,8 +342,6 @@ Public Class Funciones
             ToNumber = "52" & ToNumber
             Dim TemplateName As String = "ingresos_clinica"
             Dim LanguageCode As String = "es_MX"
-            Dim URLBotonUno As String = ""
-            Dim URLBotonDos As String = ""
             Dim HeaderImageURL As String = tb_DatosCliente.Rows(0).Item("url_iMagen_WA").ToString
 
             UserName = Funciones.limpiarTextoMensajesWA(UserName)
@@ -396,8 +386,6 @@ Public Class Funciones
                         .AppointmentHour = AppointmentHour,
                         .DoctorName = DoctorName,
                         .Office = Office,
-                        .URLBotonUno = URLBotonUno,
-                        .URLBotonDos = URLBotonDos,
                         .AppointmentNewDate = AppointmentNewDate,
                         .AppointmentNewHour = AppointmentNewHour,
                         .TipoIngreso = TipoIngresoOI,
@@ -423,126 +411,6 @@ Public Class Funciones
         End Try
 
     End Function
-
-#Region "Funciones de Financieros"
-
-    Shared Function PacienteListaPrecios(ByVal ccvepaciente As String) As String
-
-        If String.IsNullOrEmpty(ccvepaciente) Then
-            Return "1"
-        End If
-
-        Dim tb As DataTable = frmInterface.tb_Recordset_MySQL_local("Select cat_factorsocial2.icvefactorsocial as lista_precios from tb_paciente " & _
-                                                   "INNER JOIN cat_factorsocial2 ON (cat_factorsocial2.cClasificacion = tb_paciente.cClasificacion) " & _
-                                                   "where " & _
-                                                   "ccvepaciente = '" & ccvepaciente & "'")
-        If tb.Rows.Count > 0 Then
-            Return tb.Rows(0).Item("lista_precios").ToString()
-        End If
-
-        Return "1"
-
-    End Function
-
-    ''' <summary>
-    ''' Precion de Publico General 
-    ''' </summary>
-    ''' <param name="ccvematerial"></param>
-    ''' <returns></returns>
-    ''' <remarks></remarks>
-    Shared Function MaterialPrecioPublicoGeneral(ByVal ccvematerial As String) As Double
-
-        Dim tb_materiales As DataTable = frmInterface.tb_Recordset_MySQL_local("Select iPrecioPublicoOficial " & _
-                                                              "from tb_materiales where ccvematerial = '" & ccvematerial & "'")
-        If tb_materiales.Rows.Count > 0 Then
-            Try
-                Return Convert.ToDouble(tb_materiales.Rows(0).Item(0))
-            Catch ex As Exception
-            End Try
-        End If
-
-        Return 0
-
-    End Function
-
-    'Funciones de Operación con Numeros
-
-    Shared Function Numero_Redondear(ByVal dNumero As Double, ByVal iDecimales As Integer) As Double
-
-        Dim dRetorno As Double
-        dRetorno = Math.Round(dNumero, iDecimales)
-        Return dRetorno
-
-    End Function
-
-    ''' <summary>
-    ''' Nuevo Modelo de Cobro para N Listas de Precios
-    ''' </summary>
-    ''' <param name="ccvematerial"></param>
-    ''' <param name="Cantidad"></param>
-    ''' <param name="ListaPrecios"></param>
-    ''' <param name="TipoCambioValor"></param>
-    ''' <returns></returns>
-    ''' <remarks></remarks>
-    Shared Function getImporteClasificacionNew(ByVal ccvematerial As String, ByVal Cantidad As Double, ByVal ListaPrecios As Integer, Optional TipoCambioValor As Double = 1) As Double
-
-        Dim PrecioPublico As Double = 0
-        Dim ImporteTicket As Double = 0
-
-        Try
-            Dim tb As DataTable = frmInterface.tb_Recordset_MySQL_local("Select iPrecio from tb_materiales_precios where " & _
-                                                       "ccvematerial = '" & ccvematerial & "' and lista_precios_id = '" & ListaPrecios & "'")
-
-            If tb.Rows.Count > 0 Then
-                PrecioPublico = Convert.ToDouble(tb.Rows(0).Item("iPrecio"))
-                PrecioPublico = PrecioPublico / TipoCambioValor
-                ImporteTicket = Math.Round(PrecioPublico * Cantidad, 2)
-            End If
-        Catch ex As Exception
-        End Try
-
-        Return ImporteTicket
-
-    End Function
-
-    ''' <summary>
-    ''' Multiplica por factor 1.16
-    ''' </summary>
-    ''' <returns></returns>
-    ''' <remarks></remarks>
-    Shared Function IvaFactorAumenta() As Double
-
-        Dim tb As DataTable
-        tb = frmInterface.tb_Recordset_MySQL_local("Select iFactor from cat_impuestos where " & _
-                                              "iVigente = '1'")
-        Try
-            If tb.Rows.Count > 0 Then
-                Return Convert.ToDouble(tb.Rows(0).Item(0))
-            End If
-        Catch ex As Exception
-        End Try
-
-        Return 1
-
-    End Function
-
-    Shared Function TicketEC_Id(ByVal NumTicket As String) As Integer
-
-        Dim tb As Data.DataTable
-        tb = frmInterface.tb_Recordset_MySQL_local("SELECT icveticketec FROM tb_ticketsec where " & _
-                                           "cNumTicketec = '" & NumTicket & "'")
-        Try
-            If tb.Rows.Count > 0 Then
-                Return Convert.ToInt32(tb.Rows(0).Item(0))
-            End If
-        Catch ex As Exception
-        End Try
-
-        Return 0
-
-    End Function
-
-#End Region
 
 #Region "Paquetes"
 
@@ -932,109 +800,6 @@ valida_cantidad_2:
         Catch ex As Exception
             Return "NO CLASIFICADO"
         End Try
-        Return tb.Rows(0).Item(0).ToString
-
-    End Function
-
-    ''' <summary>
-    ''' Devuelve el nombre del servicio activo del paciente, sin importar cómo se haya logueado el usuario.
-    ''' </summary>
-    ''' <param name="ClavePaciente"></param>
-    ''' <returns></returns>
-    ''' <remarks></remarks>
-    Shared Function Get_Recepcion_ServicioActivo(ByVal ClavePaciente As String) As String
-
-        Try
-            Dim tbRecepcionVigente As DataTable
-            tbRecepcionVigente = frmInterface.tb_Recordset_MySQL_local("SELECT Id, cdscareaafectada, cClasificacionAccidente, cStatus " & _
-                                                                   "FROM tb_urg_recepcion WHERE " & _
-                                                                   "ccvepaciente = '" & ClavePaciente & "' AND " & _
-                                                                   "iEgresado = 0 " & _
-                                                                   "ORDER BY Id DESC")
-            If tbRecepcionVigente.Rows.Count = 0 Then
-                Return ""
-            Else
-                Return tbRecepcionVigente.Rows(0).Item(1).ToString
-            End If
-            Return ""
-        Catch ex As Exception
-            Return ""
-        End Try
-
-        Return ""
-
-    End Function
-
-    Shared Function Get_Recepcion_IdRecepcion(ByVal ClavePaciente As String, Servicio As String) As Integer
-
-
-        If ClavePaciente = "" Then
-            Return 0
-        End If
-
-        Try
-            Dim tbRecepcionVigente As DataTable
-            Dim IdRecepcion As Integer
-
-            tbRecepcionVigente = frmInterface.tb_Recordset_MySQL_local("SELECT Id, icvecama, cClasificacionAccidente, cStatus " & _
-                                                                   "FROM tb_urg_recepcion WHERE " & _
-                                                                   "ccvepaciente = '" & ClavePaciente & "' and " & _
-                                                                   "cdscareaafectada = '" & Servicio & "' and " & _
-                                                                   "iEgresado = 0 " & _
-                                                                   "ORDER BY fchHoraRecepcion desc")
-
-            If tbRecepcionVigente.Rows.Count = 0 Then
-                tbRecepcionVigente = frmInterface.tb_Recordset_MySQL_local("SELECT Id, icvecama, cClasificacionAccidente, cStatus " & _
-                                                                      "FROM tb_urg_recepcion WHERE " & _
-                                                                      "ccvepaciente = '" & ClavePaciente & "' and " & _
-                                                                      "iEgresado = 0 " & _
-                                                                      "ORDER BY fchHoraRecepcion desc")
-                If tbRecepcionVigente.Rows.Count = 0 Then
-                    Return 0
-                Else
-                    IdRecepcion = tbRecepcionVigente.Rows(0).Item(0).ToString
-                End If
-            Else
-                IdRecepcion = tbRecepcionVigente.Rows(0).Item(0).ToString
-            End If
-
-            Return IdRecepcion
-
-        Catch ex As Exception
-            Return 0
-        End Try
-
-        Return 0
-
-    End Function
-
-    Shared Function Get_Recepcion_icvecama(ByVal IdRecepcion As Integer, ByVal ClavePaciente As String) As Integer
-
-        If IdRecepcion = 0 Then
-            Return 0
-        End If
-
-        Dim Cama As Integer = 0
-
-        Try
-            Dim tbRecepcionVigente As DataTable
-            tbRecepcionVigente = frmInterface.tb_Recordset_MySQL_local("SELECT Id, icvecama, cClasificacionAccidente, cStatus " & _
-                                                                   "FROM tb_urg_recepcion WHERE " & _
-                                                                   "Id = '" & IdRecepcion & "' and " & _
-                                                                   "ccvepaciente = '" & ClavePaciente & "'")
-            If tbRecepcionVigente.Rows.Count = 0 Then
-                Return Cama
-            Else
-                Cama = tbRecepcionVigente.Rows(0).Item(1).ToString
-            End If
-
-            Return Cama
-
-        Catch ex As Exception
-            Return Cama
-        End Try
-
-        Return Cama
 
     End Function
 
@@ -1363,7 +1128,6 @@ Public Class FacturacionEnviarOrdenInternamiento
 
 
             '-Asignacion de Variables --------------------------------------------------
-            Dim Path As String = System.AppDomain.CurrentDomain.BaseDirectory
             Dim CrystalFile As String = PacienteFTP_Reportes("OrdenInternamiento.rpt")
             Dim reporte As New CrystalDecisions.CrystalReports.Engine.ReportDocument
             reporte.Load(CrystalFile)
@@ -1626,10 +1390,7 @@ End Class
 
 Public Class EnviarCorreos
 
-    Shared IdTabla As Integer
-    Shared ccvepaciente As String
     Shared tb_enviar As DataTable
-    Shared cadXML As String
 
 
     Shared email As String
@@ -1793,7 +1554,7 @@ Public Class EnviarCorreos
 
         Try
             'Creamos nuestro objeto, el constructor recive la cadena como parametro
-            Dim mail As New System.Net.Mail.MailAddress(direccionEmail)
+            GC.KeepAlive(New System.Net.Mail.MailAddress(direccionEmail))
             'Al crear nuestro objeto evalua la cadena, y si es correcta no se produce
             'ningun error
             Return True

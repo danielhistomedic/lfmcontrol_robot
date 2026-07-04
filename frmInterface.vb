@@ -1,12 +1,8 @@
 Imports System.Drawing.Printing
 Imports System.IO
-Imports System.Net.Http
-Imports System.Text
+Imports System.Net
 Imports System.Threading
 Imports System.Threading.Tasks
-Imports System.Net
-Imports System.Xml
-Imports Newtonsoft.Json
 
 Public Class frmInterface
 
@@ -19,25 +15,9 @@ Public Class frmInterface
     Public cnn_MySQL_CentralAsyncALM As New MySqlConnector.MySqlConnection
     Public cnn_MySQL_LocalAsyncALM As New MySqlConnector.MySqlConnection
 
-    Dim tb_sucursales_plat As DataTable
-
-    Dim PorcDescAplicado As String = ""
-    Dim PrecioPublico As Double = 0
-
-    Dim AlmacenBase As String = ""
-    Dim SucursalId As Integer = 0
     Public CLUES As String = ""
-    Dim cadena As String = ""
     'Dim IdCaja As Integer = 0
     Dim cSiglas As String = ""
-
-    Dim pbMaterial As New PictureBox
-    Dim pbLienzoPromo As New PictureBox
-    Dim pbLienzoRemate As New PictureBox
-    Dim pbLienzoDirecto As New PictureBox
-
-    Dim Impresora As String = ""
-    Dim version As Integer = 0
 
     Dim tb_ClienteData As DataTable
     Dim IpServidor As String = ""
@@ -364,7 +344,7 @@ Public Class frmInterface
 
                         Dim tb_campos As DataTable
                         tb_campos = tb_Recordset_MySQL_localAsync("SHOW COLUMNS FROM " & table_name & ";")
-                        Dim columnas As New Collection
+
                         For col As Integer = 0 To tb_campos.Rows.Count - 1
 
                             campo_nombre = tb_campos.Rows(col).Item("Field").ToString
@@ -489,7 +469,7 @@ Public Class frmInterface
 
                         Dim tb_campos As DataTable
                         tb_campos = tb_Recordset_MySQL_localAsync("SHOW COLUMNS FROM " & table_name & ";")
-                        Dim columnas As New Collection
+
                         For col As Integer = 0 To tb_campos.Rows.Count - 1
 
                             campo_nombre = tb_campos.Rows(col).Item("Field").ToString
@@ -714,7 +694,7 @@ Public Class frmInterface
 
                         Dim tb_campos As DataTable
                         tb_campos = tb_Recordset_MySQL_localAsyncALM("SHOW COLUMNS FROM " & table_name & ";")
-                        Dim columnas As New Collection
+
                         For col As Integer = 0 To tb_campos.Rows.Count - 1
 
                             campo_nombre = tb_campos.Rows(col).Item("Field").ToString
@@ -836,7 +816,7 @@ Public Class frmInterface
 
                         Dim tb_campos As DataTable
                         tb_campos = tb_Recordset_MySQL_localAsyncALM("SHOW COLUMNS FROM " & table_name & ";")
-                        Dim columnas As New Collection
+
                         For col As Integer = 0 To tb_campos.Rows.Count - 1
 
                             campo_nombre = tb_campos.Rows(col).Item("Field").ToString
@@ -1385,7 +1365,7 @@ Public Class frmInterface
 
                         Dim tb_campos As DataTable
                         tb_campos = tb_Recordset_MySQL_local("SHOW COLUMNS FROM " & table_name & ";")
-                        Dim columnas As New Collection
+
                         For col As Integer = 0 To tb_campos.Rows.Count - 1
 
                             campo_nombre = tb_campos.Rows(col).Item("Field").ToString
@@ -1509,7 +1489,7 @@ Public Class frmInterface
 
                         Dim tb_campos As DataTable
                         tb_campos = tb_Recordset_MySQL_local("SHOW COLUMNS FROM " & table_name & ";")
-                        Dim columnas As New Collection
+
                         For col As Integer = 0 To tb_campos.Rows.Count - 1
 
                             campo_nombre = tb_campos.Rows(col).Item("Field").ToString
@@ -1726,7 +1706,7 @@ Public Class frmInterface
 
                         Dim tb_campos As DataTable
                         tb_campos = tb_Recordset_MySQL_local("SHOW COLUMNS FROM " & table_name & ";")
-                        Dim columnas As New Collection
+
                         For col As Integer = 0 To tb_campos.Rows.Count - 1
 
                             campo_nombre = tb_campos.Rows(col).Item("Field").ToString
@@ -1850,7 +1830,7 @@ Public Class frmInterface
 
                         Dim tb_campos As DataTable
                         tb_campos = tb_Recordset_MySQL_local("SHOW COLUMNS FROM " & table_name & ";")
-                        Dim columnas As New Collection
+
                         For col As Integer = 0 To tb_campos.Rows.Count - 1
 
                             campo_nombre = tb_campos.Rows(col).Item("Field").ToString
@@ -2062,7 +2042,7 @@ Public Class frmInterface
 
                         Dim tb_campos As DataTable
                         tb_campos = tb_Recordset_MySQL_local("SHOW COLUMNS FROM " & table_name & ";")
-                        Dim columnas As New Collection
+
                         For col As Integer = 0 To tb_campos.Rows.Count - 1
 
                             campo_nombre = tb_campos.Rows(col).Item("Field").ToString
@@ -2186,7 +2166,7 @@ Public Class frmInterface
 
                         Dim tb_campos As DataTable
                         tb_campos = tb_Recordset_MySQL_local("SHOW COLUMNS FROM " & table_name & ";")
-                        Dim columnas As New Collection
+
                         For col As Integer = 0 To tb_campos.Rows.Count - 1
 
                             campo_nombre = tb_campos.Rows(col).Item("Field").ToString
@@ -2434,9 +2414,6 @@ Public Class frmInterface
     End Sub
 
     Private Sub ReiniciarProcesoSP()
-
-        Dim reiniciar_t1 As Boolean = False
-        Dim reiniciar_t2 As Boolean = False
 
         If export_hosting_tarea Is Nothing OrElse export_hosting_tarea.IsCompleted Then
             IniciarProcesosSP()
@@ -2773,7 +2750,6 @@ Public Class frmInterface
                 Return False
             End If
 
-            Dim FechaCx As Date
             Dim FechaCx_Str As String = ""
             Dim OrdenInt As Integer = 0
 
@@ -2782,7 +2758,6 @@ Public Class frmInterface
             Try
                 OrdenInt = 0
                 FechaCx_Str = Format(CDate(tbcx_central.Rows(row_i).Item("fecha_cirugia").ToString), "yyyy-MM-dd") & " " & tbcx_central.Rows(row_i).Item("fecha_cirugia_hora_ini").ToString & ""
-                FechaCx = CDate(FechaCx_Str)
                 FechaCx_Str = "'" & Format(CDate(tbcx_central.Rows(row_i).Item("fecha_cirugia").ToString), "yyyy-MM-dd") & " " & tbcx_central.Rows(row_i).Item("fecha_cirugia_hora_ini").ToString & "'"
 
                 EstatusCx = "PROGRAMADA"

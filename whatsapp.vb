@@ -1,4 +1,3 @@
-Imports System
 Imports System.Net
 Imports System.IO
 Imports System.Text
@@ -38,14 +37,7 @@ Public Class whatsapp
             End Using
 
             ' Obtener respuesta
-            'Console.WriteLine(vbCrLf & "Enviando petición a WhatsApp API...")
             Using response As HttpWebResponse = DirectCast(request.GetResponse(), HttpWebResponse)
-                Using reader As New StreamReader(response.GetResponseStream())
-                    Dim responseText As String = reader.ReadToEnd()
-                    'Console.WriteLine(vbCrLf & "Respuesta recibida:")
-                    'Console.WriteLine($"Código de estado: {response.StatusCode}")
-                    'Console.WriteLine(responseText)
-                End Using
             End Using
 
             Return True
@@ -184,8 +176,6 @@ Public Class Parameters
     Public Property AppointmentHour As String
     Public Property DoctorName As String
     Public Property Office As String
-    Public Property URLBotonUno As String
-    Public Property URLBotonDos As String
     Public Property AppointmentNewDate As String
     Public Property AppointmentNewHour As String
     Public Property TipoIngreso As String
