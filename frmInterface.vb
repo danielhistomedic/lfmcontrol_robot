@@ -3,6 +3,7 @@ Imports System.IO
 Imports System.Net
 Imports System.Threading
 Imports System.Threading.Tasks
+Imports System.Collections.Generic
 
 Public Class frmInterface
 
@@ -247,7 +248,7 @@ Public Class frmInterface
             Catch ex As Exception
                 LogEventos.Escribir("Reinicia. " & ex.Message)
             End Try
-           
+
             ' == == == == == == == == == == == == == == == == == == == == == == == == ==
 
             ' == Cotinuamente Verificando si la task ya fue terminada
@@ -325,6 +326,11 @@ Public Class frmInterface
             Dim longblob_filed_contain As Boolean = False
             Dim name_file_blob As String = ""
 
+            Dim cache_campo_llave As New Dictionary(Of String, String)()
+            Dim cache_campos As New Dictionary(Of String, DataTable)()
+            Dim cache_longblob As New Dictionary(Of String, DataTable)()
+            Dim actualizoFchActual As Boolean = False
+
             For i As Integer = 0 To tb_his_replica_local.Rows.Count - 1
 
                 longblob_filed_contain = False
@@ -333,18 +339,26 @@ Public Class frmInterface
 
                 Dim set_value As String = ""
 
+                If Not cache_campo_llave.TryGetValue(table_name, campo_llave) Then
+                    Dim tb_campo_llave As DataTable = tb_Recordset_MySQL_localAsync("SHOW COLUMNS FROM " & table_name & " WHERE Extra = 'auto_increment';")
+                    If tb_campo_llave.Rows.Count > 0 Then
+                        campo_llave = tb_campo_llave.Rows(0).Item("Field").ToString()
+                    End If
+                    cache_campo_llave(table_name) = campo_llave
+                End If
+
                 If tb_his_replica_local.Rows(i).Item("tipo_operacion").ToString = "INSERT" Then
 
-                    Dim tb_campo_llave As DataTable
-                    tb_campo_llave = tb_Recordset_MySQL_localAsync("SHOW COLUMNS FROM " & table_name & " WHERE Extra = 'auto_increment';")
-                    campo_llave = tb_campo_llave.Rows(0).Item("Field").ToString
                     campo_llave_value_id = tb_his_replica_local.Rows(i).Item("id_tabla_afectada").ToString
                     tb_temp_insert = tb_Recordset_MySQL_localAsync("Select * from " & table_name & " where " & campo_llave & " = " & campo_llave_value_id & "")
 
                     If tb_temp_insert.Rows.Count > 0 Then
 
-                        Dim tb_campos As DataTable
-                        tb_campos = tb_Recordset_MySQL_localAsync("SHOW COLUMNS FROM " & table_name & ";")
+                        Dim tb_campos As DataTable = Nothing
+                        If Not cache_campos.TryGetValue(table_name, tb_campos) Then
+                            tb_campos = tb_Recordset_MySQL_localAsync("SHOW COLUMNS FROM " & table_name & ";")
+                            cache_campos(table_name) = tb_campos
+                        End If
 
                         For col As Integer = 0 To tb_campos.Rows.Count - 1
 
@@ -417,8 +431,11 @@ Public Class frmInterface
                                           set_value) Then
 
                             If longblob_filed_contain = True Then
-                                Dim tb_longblob As DataTable
-                                tb_longblob = tb_Recordset_MySQL_localAsync("SHOW COLUMNS FROM " & table_name & " WHERE Type = 'longblob';")
+                                Dim tb_longblob As DataTable = Nothing
+                                If Not cache_longblob.TryGetValue(table_name, tb_longblob) Then
+                                    tb_longblob = tb_Recordset_MySQL_localAsync("SHOW COLUMNS FROM " & table_name & " WHERE Type = 'longblob';")
+                                    cache_longblob(table_name) = tb_longblob
+                                End If
                                 For col_lb As Integer = 0 To tb_longblob.Rows.Count - 1
                                     name_file_blob = tb_longblob.Rows(col_lb).Item("Field").ToString
                                     If Not IsDBNull(tb_temp_insert.Rows(0).Item(name_file_blob)) Then
@@ -426,17 +443,13 @@ Public Class frmInterface
                                             Update_FotoSistema_CentralAsync(name_file_blob, table_name, campo_llave, campo_llave_value_id, tb_temp_insert.Rows(0).Item(name_file_blob))
                                         Catch ex As Exception
                                             AgregarLog(500, "Error desconocido en Exportar Data: " & ex.Message)
-                                            'Me.lstLog.Items.Add(Calcula_FechaActual)
-                                            'Me.lstLog.Items(lstLog.Items.Count - 1).SubItems.Add("Error desconocido en Exportar Data: " & ex.Message)
                                         End Try
                                     End If
                                 Next
 
                             End If
 
-                            Update_CentralAsync("fchactual", _
-                                           "fchActual = current_timestamp", _
-                                           "Id", 1)
+                            actualizoFchActual = True
 
                             Update_localAsync("his_replica", _
                                          "sinc = 0", _
@@ -460,16 +473,16 @@ Public Class frmInterface
 
                 ElseIf tb_his_replica_local.Rows(i).Item("tipo_operacion").ToString = "UPDATE" Then
 
-                    Dim tb_campo_llave As DataTable
-                    tb_campo_llave = tb_Recordset_MySQL_localAsync("SHOW COLUMNS FROM " & table_name & " WHERE Extra = 'auto_increment';")
-                    campo_llave = tb_campo_llave.Rows(0).Item("Field").ToString
                     campo_llave_value_id = tb_his_replica_local.Rows(i).Item("id_tabla_afectada").ToString
                     tb_temp_insert = tb_Recordset_MySQL_localAsync("Select * from " & table_name & " where " & campo_llave & " = " & campo_llave_value_id & "")
 
                     If tb_temp_insert.Rows.Count > 0 Then
 
-                        Dim tb_campos As DataTable
-                        tb_campos = tb_Recordset_MySQL_localAsync("SHOW COLUMNS FROM " & table_name & ";")
+                        Dim tb_campos As DataTable = Nothing
+                        If Not cache_campos.TryGetValue(table_name, tb_campos) Then
+                            tb_campos = tb_Recordset_MySQL_localAsync("SHOW COLUMNS FROM " & table_name & ";")
+                            cache_campos(table_name) = tb_campos
+                        End If
 
                         For col As Integer = 0 To tb_campos.Rows.Count - 1
 
@@ -505,8 +518,6 @@ Public Class frmInterface
                                         Update_FotoSistema_CentralAsync(campo_nombre, table_name, campo_llave, campo_llave_value_id, tb_temp_insert.Rows(0).Item(col))
                                     Catch ex As Exception
                                         AgregarLog(500, "Error desconocido en Exportar Data: " & ex.Message)
-                                        'Me.lstLog.Items.Add(Calcula_FechaActual)
-                                        'Me.lstLog.Items(lstLog.Items.Count - 1).SubItems.Add("Error desconocido en Exportar Data: " & ex.Message)
                                     End Try
                                 End If
 
@@ -531,7 +542,6 @@ Public Class frmInterface
                                 set_value_row = tb_temp_insert.Rows(0).Item(col).ToString
                                 set_value_row = set_value_row.Replace("'", "\'")
                                 set_value = set_value & " " & campo_nombre & " = '" & set_value_row & "', "
-                                'set_value = set_value & " " & campo_nombre & " = '" & tb_temp_insert.Rows(0).Item(col).ToString & "', "
                             End If
 
                         Next
@@ -554,9 +564,7 @@ Public Class frmInterface
                                        set_value, _
                                        campo_llave, campo_llave_value_id) Then
 
-                            Update_CentralAsync("fchactual", _
-                                           "fchActual = current_timestamp", _
-                                           "Id", 1)
+                            actualizoFchActual = True
 
                             Update_localAsync("his_replica", _
                                          "sinc = 0", _
@@ -567,16 +575,11 @@ Public Class frmInterface
 
                 ElseIf tb_his_replica_local.Rows(i).Item("tipo_operacion").ToString = "DELETE" Then
 
-                    Dim tb_campo_llave As DataTable
-                    tb_campo_llave = tb_Recordset_MySQL_localAsync("SHOW COLUMNS FROM " & table_name & " WHERE Extra = 'auto_increment';")
-                    campo_llave = tb_campo_llave.Rows(0).Item("Field").ToString
                     campo_llave_value_id = tb_his_replica_local.Rows(i).Item("id_tabla_afectada").ToString
 
                     If Delete_CentralAsync("DELETE FROM " & table_name & " WHERE " & campo_llave & " = " & campo_llave_value_id) Then
 
-                        Update_CentralAsync("fchactual", _
-                                       "fchActual = current_timestamp", _
-                                       "Id", 1)
+                        actualizoFchActual = True
 
                         Update_localAsync("his_replica", _
                                      "sinc = 0", _
@@ -597,6 +600,12 @@ Public Class frmInterface
                 End Try
 
             Next
+
+            If actualizoFchActual Then
+                Update_CentralAsync("fchactual", _
+                               "fchActual = current_timestamp", _
+                               "Id", 1)
+            End If
 
             '== Eliminar Cargados === 
             Delete_localAsync("DELETE from his_replica " & _
@@ -675,6 +684,11 @@ Public Class frmInterface
             Dim longblob_filed_contain As Boolean = False
             Dim name_file_blob As String = ""
 
+            Dim cache_campo_llave As New Dictionary(Of String, String)()
+            Dim cache_campos As New Dictionary(Of String, DataTable)()
+            Dim cache_longblob As New Dictionary(Of String, DataTable)()
+            Dim actualizoFchActual As Boolean = False
+
             For i As Integer = 0 To tb_his_replica_local.Rows.Count - 1
 
                 longblob_filed_contain = False
@@ -683,18 +697,26 @@ Public Class frmInterface
 
                 Dim set_value As String = ""
 
+                If Not cache_campo_llave.TryGetValue(table_name, campo_llave) Then
+                    Dim tb_campo_llave As DataTable = tb_Recordset_MySQL_localAsyncALM("SHOW COLUMNS FROM " & table_name & " WHERE Extra = 'auto_increment';")
+                    If tb_campo_llave.Rows.Count > 0 Then
+                        campo_llave = tb_campo_llave.Rows(0).Item("Field").ToString()
+                    End If
+                    cache_campo_llave(table_name) = campo_llave
+                End If
+
                 If tb_his_replica_local.Rows(i).Item("tipo_operacion").ToString = "INSERT" Then
 
-                    Dim tb_campo_llave As DataTable
-                    tb_campo_llave = tb_Recordset_MySQL_localAsyncALM("SHOW COLUMNS FROM " & table_name & " WHERE Extra = 'auto_increment';")
-                    campo_llave = tb_campo_llave.Rows(0).Item("Field").ToString
                     campo_llave_value_id = tb_his_replica_local.Rows(i).Item("id_tabla_afectada").ToString
                     tb_temp_insert = tb_Recordset_MySQL_localAsyncALM("Select * from " & table_name & " where " & campo_llave & " = " & campo_llave_value_id & "")
 
                     If tb_temp_insert.Rows.Count > 0 Then
 
-                        Dim tb_campos As DataTable
-                        tb_campos = tb_Recordset_MySQL_localAsyncALM("SHOW COLUMNS FROM " & table_name & ";")
+                        Dim tb_campos As DataTable = Nothing
+                        If Not cache_campos.TryGetValue(table_name, tb_campos) Then
+                            tb_campos = tb_Recordset_MySQL_localAsyncALM("SHOW COLUMNS FROM " & table_name & ";")
+                            cache_campos(table_name) = tb_campos
+                        End If
 
                         For col As Integer = 0 To tb_campos.Rows.Count - 1
 
@@ -763,11 +785,14 @@ Public Class frmInterface
                                      "id", tb_his_replica_local.Rows(i).Item("id").ToString)
                     Else
                         If Insert_CentralAsyncALM(table_name, _
-                                          set_value) Then
+                                           set_value) Then
 
                             If longblob_filed_contain = True Then
-                                Dim tb_longblob As DataTable
-                                tb_longblob = tb_Recordset_MySQL_localAsyncALM("SHOW COLUMNS FROM " & table_name & " WHERE Type = 'longblob';")
+                                Dim tb_longblob As DataTable = Nothing
+                                If Not cache_longblob.TryGetValue(table_name, tb_longblob) Then
+                                    tb_longblob = tb_Recordset_MySQL_localAsyncALM("SHOW COLUMNS FROM " & table_name & " WHERE Type = 'longblob';")
+                                    cache_longblob(table_name) = tb_longblob
+                                End If
                                 For col_lb As Integer = 0 To tb_longblob.Rows.Count - 1
                                     name_file_blob = tb_longblob.Rows(col_lb).Item("Field").ToString
                                     If Not IsDBNull(tb_temp_insert.Rows(0).Item(name_file_blob)) Then
@@ -781,9 +806,7 @@ Public Class frmInterface
 
                             End If
 
-                            Update_CentralAsyncALM("fchactual", _
-                                           "fchActual = current_timestamp", _
-                                           "Id", 1)
+                            actualizoFchActual = True
 
                             Update_localAsyncALM("his_replica", _
                                          "sinc = 0", _
@@ -807,16 +830,16 @@ Public Class frmInterface
 
                 ElseIf tb_his_replica_local.Rows(i).Item("tipo_operacion").ToString = "UPDATE" Then
 
-                    Dim tb_campo_llave As DataTable
-                    tb_campo_llave = tb_Recordset_MySQL_localAsyncALM("SHOW COLUMNS FROM " & table_name & " WHERE Extra = 'auto_increment';")
-                    campo_llave = tb_campo_llave.Rows(0).Item("Field").ToString
                     campo_llave_value_id = tb_his_replica_local.Rows(i).Item("id_tabla_afectada").ToString
                     tb_temp_insert = tb_Recordset_MySQL_localAsyncALM("Select * from " & table_name & " where " & campo_llave & " = " & campo_llave_value_id & "")
 
                     If tb_temp_insert.Rows.Count > 0 Then
 
-                        Dim tb_campos As DataTable
-                        tb_campos = tb_Recordset_MySQL_localAsyncALM("SHOW COLUMNS FROM " & table_name & ";")
+                        Dim tb_campos As DataTable = Nothing
+                        If Not cache_campos.TryGetValue(table_name, tb_campos) Then
+                            tb_campos = tb_Recordset_MySQL_localAsyncALM("SHOW COLUMNS FROM " & table_name & ";")
+                            cache_campos(table_name) = tb_campos
+                        End If
 
                         For col As Integer = 0 To tb_campos.Rows.Count - 1
 
@@ -874,7 +897,6 @@ Public Class frmInterface
                                 set_value_row = tb_temp_insert.Rows(0).Item(col).ToString
                                 set_value_row = set_value_row.Replace("'", "\'")
                                 set_value = set_value & " " & campo_nombre & " = '" & set_value_row & "', "
-                                'set_value = set_value & " " & campo_nombre & " = '" & tb_temp_insert.Rows(0).Item(col).ToString & "', "
                             End If
 
                         Next
@@ -897,9 +919,7 @@ Public Class frmInterface
                                        set_value, _
                                        campo_llave, campo_llave_value_id) Then
 
-                            Update_CentralAsyncALM("fchactual", _
-                                           "fchActual = current_timestamp", _
-                                           "Id", 1)
+                            actualizoFchActual = True
 
                             Update_localAsyncALM("his_replica", _
                                          "sinc = 0", _
@@ -910,16 +930,11 @@ Public Class frmInterface
 
                 ElseIf tb_his_replica_local.Rows(i).Item("tipo_operacion").ToString = "DELETE" Then
 
-                    Dim tb_campo_llave As DataTable
-                    tb_campo_llave = tb_Recordset_MySQL_localAsyncALM("SHOW COLUMNS FROM " & table_name & " WHERE Extra = 'auto_increment';")
-                    campo_llave = tb_campo_llave.Rows(0).Item("Field").ToString
                     campo_llave_value_id = tb_his_replica_local.Rows(i).Item("id_tabla_afectada").ToString
 
                     If Delete_CentralAsyncALM("DELETE FROM " & table_name & " WHERE " & campo_llave & " = " & campo_llave_value_id) Then
 
-                        Update_CentralAsyncALM("fchactual", _
-                                       "fchActual = current_timestamp", _
-                                       "Id", 1)
+                        actualizoFchActual = True
 
                         Update_localAsyncALM("his_replica", _
                                      "sinc = 0", _
@@ -941,6 +956,12 @@ Public Class frmInterface
 
             Next
 
+            If actualizoFchActual Then
+                Update_CentralAsyncALM("fchactual", _
+                               "fchActual = current_timestamp", _
+                               "Id", 1)
+            End If
+
             '== Eliminar Cargados === 
             Delete_localAsync("DELETE from his_replica " & _
                                 "WHERE " & _
@@ -959,12 +980,8 @@ Public Class frmInterface
             Catch ex2 As Exception
             End Try
 
-
-
         Catch ex As Exception
             AgregarLog(500, "Error desconocido en ExportarDataToHosting ALM: " & ex.Message)
-            'Me.lstLog.Items.Add(Calcula_FechaActual)
-            'Me.lstLog.Items(lstLog.Items.Count - 1).SubItems.Add("Error desconocido en Exportar Data: " & ex.Message)
         End Try
 
     End Sub
