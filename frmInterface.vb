@@ -268,6 +268,7 @@ Public Class frmInterface
         While Not token.IsCancellationRequested
             Me.ExportarDataToHostingSP()
             Me.ExportarDataToHostingSP_Almacen()
+            token.WaitHandle.WaitOne(1000)
         End While
 
     End Sub
@@ -2383,11 +2384,13 @@ Public Class frmInterface
 
         Try
             If lstLog.InvokeRequired Then
-                lstLog.Invoke(Sub() lstLog.Items.Add(Calcula_FechaActual.ToString))
-                lstLog.Invoke(Sub() Me.lstLog.Items(lstLog.Items.Count - 1).SubItems.Add(error_s))
+                lstLog.Invoke(Sub()
+                                  Dim item = lstLog.Items.Add(Calcula_FechaActual().ToString())
+                                  item.SubItems.Add(error_s)
+                              End Sub)
             Else
-                Me.lstLog.Items.Add(Calcula_FechaActual)
-                Me.lstLog.Items(lstLog.Items.Count - 1).SubItems.Add(error_s)
+                Dim item = Me.lstLog.Items.Add(Calcula_FechaActual().ToString())
+                item.SubItems.Add(error_s)
             End If
             LogEventos.Escribir("AgregarLog. " & error_s)
         Catch ex2 As Exception
