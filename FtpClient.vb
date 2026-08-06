@@ -1,4 +1,4 @@
-﻿Imports System.Net
+Imports System.Net
 Imports System.IO
 Imports System.Threading
 
@@ -48,7 +48,7 @@ Public Class FtpClient
                 intento += 1
 
                 If intento >= MaxReintentos Then
-                    'Throw New Exception("Falló después de {MaxReintentos} intentos: {ex.Message}")
+                    LogEventos.Escribir("FtpClient error tras " & MaxReintentos & " intentos: " & ex.Message)
                     Exit While
                 End If
 

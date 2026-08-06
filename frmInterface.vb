@@ -1,4 +1,4 @@
-Imports System.Drawing.Printing
+﻿Imports System.Drawing.Printing
 Imports System.IO
 Imports System.Net
 Imports System.Threading
@@ -216,8 +216,18 @@ Public Class frmInterface
             '======================================
 
             '== Exportar Archivso Adjuntos 
-            Me.ExportarAdjuntos()
-            Me.ExportarAdjuntosFotosMaterial()
+            Try
+                Me.ExportarAdjuntos()
+            Catch ex As Exception
+                LogEventos.Escribir("ExportarAdjuntos. " & ex.Message)
+            End Try
+
+            Try
+                Me.ExportarAdjuntosFotosMaterial()
+            Catch ex As Exception
+                LogEventos.Escribir("ExportarAdjuntosFotosMaterial. " & ex.Message)
+            End Try
+
             ' ======================================
 
             'Me.ProgressBarX1.Value = 0
@@ -2856,6 +2866,7 @@ intenta_otravz:
         Try
             Return ftp.SubirArchivo(rutaLocal, nombreArchivoRemoto, FTP_CARPETA)
         Catch ex As Exception
+            LogEventos.Escribir("Error en SubirArchivoHosting: " & ex.Message)
         End Try
 
         Return False
@@ -2941,7 +2952,7 @@ intenta_otravz:
 
                         Next
 
-                        'Si las 5 imágenes fueron procesadas (existieran o no)
+                        'Si las 5 imÃ¡genes fueron procesadas (existieran o no)
                         If imagenesProcesadas = 5 Then
                             Update_local("tb_materiales_ftp",
                                          "sinc = 0",
@@ -2962,14 +2973,12 @@ intenta_otravz:
                 LogEventos.Escribir("Error al consultar tb_materiales_ftp: " & exTabla.Message)
             End Try
         Catch ex As Exception
-            LogEventos.Escribir("Error general en ExportarAdjuntos: " & ex.Message)
+            LogEventos.Escribir("Error general en ExportarAdjuntosFotosMaterial: " & ex.Message)
         End Try
 
     End Sub
 
-
 #End Region
-
 
 End Class
 
