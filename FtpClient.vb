@@ -16,16 +16,56 @@ Public Class FtpClient
 
     Public Sub New(host As String, user As String, pass As String, Optional useSsl As Boolean = False)
 
-        _host = host.TrimEnd("/"c)
+        Dim cleanHost As String = If(host, "").Trim()
+        If cleanHost.StartsWith("ftp://", StringComparison.OrdinalIgnoreCase) Then
+            cleanHost = cleanHost.Substring(6)
+        ElseIf cleanHost.StartsWith("ftps://", StringComparison.OrdinalIgnoreCase) Then
+            cleanHost = cleanHost.Substring(7)
+        ElseIf cleanHost.StartsWith("http://", StringComparison.OrdinalIgnoreCase) Then
+            cleanHost = cleanHost.Substring(7)
+        End If
+        cleanHost = cleanHost.Trim("/"c, " "c)
+
+        If String.IsNullOrWhiteSpace(cleanHost) Then
+            cleanHost = "127.0.0.1"
+        End If
+
+        _host = cleanHost
         _user = user
         _pass = pass
         _useSsl = useSsl
 
     End Sub
 
-    Private Function CrearRequest(ruta As String, metodo As String) As FtpWebRequest
+    Private Function ConstruirUrlRemota(rutaRemota As String) As String
+        If String.IsNullOrWhiteSpace(rutaRemota) Then
+            Throw New ArgumentException("La ruta remota FTP no puede estar vacía.")
+        End If
 
-        Dim request As FtpWebRequest = CType(WebRequest.Create(ruta), FtpWebRequest)
+        Dim rutaLimpia As String = rutaRemota.Trim().Replace("\"c, "/"c)
+        Dim urlFinal As String = ""
+
+        If rutaLimpia.StartsWith("ftp://", StringComparison.OrdinalIgnoreCase) OrElse rutaLimpia.StartsWith("ftps://", StringComparison.OrdinalIgnoreCase) Then
+            urlFinal = rutaLimpia
+        Else
+            If Not rutaLimpia.StartsWith("/") Then
+                rutaLimpia = "/" & rutaLimpia
+            End If
+            urlFinal = "ftp://" & _host & rutaLimpia
+        End If
+
+        Dim uriResult As Uri = Nothing
+        If Not Uri.TryCreate(urlFinal, UriKind.Absolute, uriResult) OrElse String.IsNullOrWhiteSpace(uriResult.Host) Then
+            Throw New UriFormatException("URI no válido: no se pudo analizar la autoridad ni el host en '" & urlFinal & "'")
+        End If
+
+        Return uriResult.AbsoluteUri
+    End Function
+
+    Private Function CrearRequest(rutaRemota As String, metodo As String) As FtpWebRequest
+
+        Dim urlValida As String = ConstruirUrlRemota(rutaRemota)
+        Dim request As FtpWebRequest = CType(WebRequest.Create(urlValida), FtpWebRequest)
         request.Method = metodo
         request.Credentials = New NetworkCredential(_user, _pass)
         request.UseBinary = True
@@ -44,6 +84,12 @@ Public Class FtpClient
         While True
             Try
                 Return func()
+            Catch ex As UriFormatException
+                LogEventos.Escribir("FtpClient error de URI no válido: " & ex.Message)
+                Exit While
+            Catch ex As ArgumentException
+                LogEventos.Escribir("FtpClient error de parámetro: " & ex.Message)
+                Exit While
             Catch ex As Exception
                 intento += 1
 
@@ -61,6 +107,8 @@ Public Class FtpClient
                 Thread.Sleep(delay)
             End Try
         End While
+
+        Return CType(Nothing, T)
     End Function
 
     ' 🔹 Subir archivo con reintento

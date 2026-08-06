@@ -1,4 +1,4 @@
-﻿Imports System.Drawing.Printing
+Imports System.Drawing.Printing
 Imports System.IO
 Imports System.Net
 Imports System.Threading
@@ -55,6 +55,12 @@ Public Class frmInterface
     Protected str_FTP_IP As String
     Public Property FTP_IP() As String
         Get
+            If String.IsNullOrWhiteSpace(str_FTP_IP) OrElse str_FTP_IP.Equals("ftp://", StringComparison.OrdinalIgnoreCase) OrElse str_FTP_IP.Equals("ftp:///", StringComparison.OrdinalIgnoreCase) Then
+                Dim hostIp As String = If(String.IsNullOrWhiteSpace(IpServidor), "127.0.0.1", IpServidor.Trim())
+                hostIp = hostIp.Replace("ftp://", "").Replace("ftps://", "").Replace("http://", "").Trim("/"c, " "c)
+                If String.IsNullOrWhiteSpace(hostIp) Then hostIp = "127.0.0.1"
+                Return "ftp://" & hostIp & "/"
+            End If
             Return str_FTP_IP
         End Get
         Set(ByVal Value As String)
@@ -186,9 +192,18 @@ Public Class frmInterface
         Dim key_Clave As Microsoft.Win32.RegistryKey
         Try
             key_Clave = Microsoft.Win32.Registry.LocalMachine.OpenSubKey("SOFTWARE\histomedic\")
-            IpServidor = key_Clave.GetValue("IpServidor", "127.0.0.1")
+            If key_Clave IsNot Nothing Then
+                Dim val As Object = key_Clave.GetValue("IpServidor", "127.0.0.1")
+                If val IsNot Nothing Then
+                    IpServidor = val.ToString().Trim()
+                End If
+            End If
         Catch ex As Exception
         End Try
+
+        If String.IsNullOrWhiteSpace(IpServidor) Then
+            IpServidor = "127.0.0.1"
+        End If
 
     End Sub
 
@@ -2783,14 +2798,14 @@ intenta_otravz:
                 "tb_ventas_adjuntos"
             }
 
-            Dim localFtpHost As String = Me.FTP_IP
-            If String.IsNullOrWhiteSpace(localFtpHost) Then
-                localFtpHost = "ftp://" & IpServidor & "/"
-            End If
-            If Not localFtpHost.StartsWith("ftp://", StringComparison.OrdinalIgnoreCase) Then
-                localFtpHost = "ftp://" & localFtpHost
-            End If
-            localFtpHost = localFtpHost.TrimEnd("/"c)
+            Dim rawIp As String = Me.FTP_IP
+            If String.IsNullOrWhiteSpace(rawIp) Then rawIp = IpServidor
+            If String.IsNullOrWhiteSpace(rawIp) Then rawIp = "127.0.0.1"
+
+            rawIp = rawIp.Replace("ftp://", "").Replace("ftps://", "").Replace("http://", "").Trim("/"c, " "c)
+            If String.IsNullOrWhiteSpace(rawIp) Then rawIp = "127.0.0.1"
+
+            Dim localFtpHost As String = "ftp://" & rawIp
 
             Dim localFtpUser As String = Me.FTP_USUARIO
             Dim localFtpPass As String = Me.FTP_PASSWORD
@@ -2877,14 +2892,14 @@ intenta_otravz:
 
         Try
 
-            Dim localFtpHost As String = Me.FTP_IP
-            If String.IsNullOrWhiteSpace(localFtpHost) Then
-                localFtpHost = "ftp://" & IpServidor & "/"
-            End If
-            If Not localFtpHost.StartsWith("ftp://", StringComparison.OrdinalIgnoreCase) Then
-                localFtpHost = "ftp://" & localFtpHost
-            End If
-            localFtpHost = localFtpHost.TrimEnd("/"c)
+            Dim rawIp As String = Me.FTP_IP
+            If String.IsNullOrWhiteSpace(rawIp) Then rawIp = IpServidor
+            If String.IsNullOrWhiteSpace(rawIp) Then rawIp = "127.0.0.1"
+
+            rawIp = rawIp.Replace("ftp://", "").Replace("ftps://", "").Replace("http://", "").Trim("/"c, " "c)
+            If String.IsNullOrWhiteSpace(rawIp) Then rawIp = "127.0.0.1"
+
+            Dim localFtpHost As String = "ftp://" & rawIp
 
             Dim localFtpUser As String = Me.FTP_USUARIO
             Dim localFtpPass As String = Me.FTP_PASSWORD
