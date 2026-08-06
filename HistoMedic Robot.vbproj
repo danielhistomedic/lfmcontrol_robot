@@ -138,6 +138,7 @@
     <Import Include="System.Xml.Linq" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="FTPHosting.vb" />
     <Compile Include="frmInterface.vb">
       <SubType>Form</SubType>
     </Compile>

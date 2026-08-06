@@ -4,6 +4,8 @@ Imports System.Net
 Imports System.Threading
 Imports System.Threading.Tasks
 Imports System.Collections.Generic
+Imports System.Net.Security
+Imports System.Security.Cryptography.X509Certificates
 
 Public Class frmInterface
 
@@ -213,8 +215,9 @@ Public Class frmInterface
             ' Rutinas Exportar 
             '======================================
 
-            '== Exportar Tablas de Sistema al Hosting
+            '== Exportar Archivso Adjuntos 
             Me.ExportarAdjuntos()
+            Me.ExportarAdjuntosFotosMaterial()
             ' ======================================
 
             'Me.ProgressBarX1.Value = 0
@@ -2753,17 +2756,220 @@ intenta_otravz:
 
     End Sub
 
+#End Region
+
+
 #Region "Adjuntos"
 
     Private Sub ExportarAdjuntos()
+
+        Try
+            Dim tablas() As String = {
+                "tb_pedidos_cliente_adjuntos",
+                "tb_compras_cotizaciones_adjuntos",
+                "tb_compras_cotizacion_interna_adjuntos",
+                "tb_pedidos_proveedor_adjuntos",
+                "tb_ventas_cotizacion_cliente_adjuntos",
+                "tb_ventas_adjuntos"
+            }
+
+            Dim localFtpHost As String = Me.FTP_IP
+            If String.IsNullOrWhiteSpace(localFtpHost) Then
+                localFtpHost = "ftp://" & IpServidor & "/"
+            End If
+            If Not localFtpHost.StartsWith("ftp://", StringComparison.OrdinalIgnoreCase) Then
+                localFtpHost = "ftp://" & localFtpHost
+            End If
+            localFtpHost = localFtpHost.TrimEnd("/"c)
+
+            Dim localFtpUser As String = Me.FTP_USUARIO
+            Dim localFtpPass As String = Me.FTP_PASSWORD
+
+            Dim ftpLocalClient As New FtpClient(localFtpHost, localFtpUser, localFtpPass)
+
+            For Each tabla As String In tablas
+                Try
+                    Dim query As String = "SELECT * FROM " & tabla & " WHERE sinc = 1"
+                    Dim dt As DataTable = tb_Recordset_MySQL_local(query)
+
+                    If dt IsNot Nothing AndAlso dt.Rows.Count > 0 Then
+                        For Each row As DataRow In dt.Rows
+                            Try
+                                If Not IsDBNull(row("archivo")) AndAlso Not String.IsNullOrWhiteSpace(row("archivo").ToString()) Then
+                                    Dim nombreArchivo As String = row("archivo").ToString().Trim()
+                                    Dim rutaRemotaLocal As String = localFtpHost & "/TB_VENTAS/" & nombreArchivo
+
+                                    Dim tempFolder As String = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "HistoMedic_Temp")
+                                    If Not System.IO.Directory.Exists(tempFolder) Then
+                                        System.IO.Directory.CreateDirectory(tempFolder)
+                                    End If
+                                    Dim rutaTemporalLocal As String = System.IO.Path.Combine(tempFolder, nombreArchivo)
+
+                                    ' 1. Descargar de FTP Local usando FtpClient.vb
+                                    Dim descargado As Boolean = ftpLocalClient.DescargarArchivo(rutaRemotaLocal, rutaTemporalLocal)
+
+                                    If descargado AndAlso System.IO.File.Exists(rutaTemporalLocal) Then
+                                        ' 2. Subir al hosting de Hostgator
+                                        Dim subido As Boolean = SubirArchivoHosting(rutaTemporalLocal, nombreArchivo, "/sistema.lfmcontrol.com.mx/Assets/files/ventas/")
+
+                                        If subido Then
+                                            ' 3. Actualizar sinc = 0 en la tabla local de origen
+                                            Dim campoCond As String = "id"
+                                            Dim valorCond As String = ""
+                                            If dt.Columns.Contains("id") AndAlso Not IsDBNull(row("id")) Then
+                                                valorCond = row("id").ToString()
+                                            Else
+                                                campoCond = "archivo"
+                                                valorCond = nombreArchivo
+                                            End If
+
+                                            Update_local(tabla, "sinc = 0", campoCond, valorCond)
+                                        End If
+
+                                        ' Limpiar archivo temporal local
+                                        Try
+                                            If System.IO.File.Exists(rutaTemporalLocal) Then
+                                                System.IO.File.Delete(rutaTemporalLocal)
+                                            End If
+                                        Catch exClean As Exception
+                                        End Try
+                                    End If
+                                End If
+                            Catch exRow As Exception
+                                LogEventos.Escribir("Error al procesar registro en " & tabla & ": " & exRow.Message)
+                            End Try
+                        Next
+                    End If
+                Catch exTabla As Exception
+                    LogEventos.Escribir("Error al consultar la tabla " & tabla & ": " & exTabla.Message)
+                End Try
+            Next
+        Catch ex As Exception
+            LogEventos.Escribir("Error general en ExportarAdjuntos: " & ex.Message)
+        End Try
+
+    End Sub
+
+    Private Function SubirArchivoHosting(rutaLocal As String, nombreArchivoRemoto As String, FTP_CARPETA As String) As Boolean
+
+        Dim ftp As New FTPHosting()
+        Try
+            Return ftp.SubirArchivo(rutaLocal, nombreArchivoRemoto, FTP_CARPETA)
+        Catch ex As Exception
+        End Try
+
+        Return False
+
+    End Function
+
+    Private Sub ExportarAdjuntosFotosMaterial()
+
+        Try
+
+            Dim localFtpHost As String = Me.FTP_IP
+            If String.IsNullOrWhiteSpace(localFtpHost) Then
+                localFtpHost = "ftp://" & IpServidor & "/"
+            End If
+            If Not localFtpHost.StartsWith("ftp://", StringComparison.OrdinalIgnoreCase) Then
+                localFtpHost = "ftp://" & localFtpHost
+            End If
+            localFtpHost = localFtpHost.TrimEnd("/"c)
+
+            Dim localFtpUser As String = Me.FTP_USUARIO
+            Dim localFtpPass As String = Me.FTP_PASSWORD
+
+            Dim ftpLocalClient As New FtpClient(localFtpHost, localFtpUser, localFtpPass)
+
+            Try
+                Dim query As String = "SELECT * FROM tb_materiales_ftp WHERE sinc = 1"
+                Dim dt As DataTable = tb_Recordset_MySQL_local(query)
+
+                If dt Is Nothing OrElse dt.Rows.Count = 0 Then Exit Try
+
+                'Crear carpeta temporal una sola vez
+                Dim tempFolder As String = Path.Combine(Path.GetTempPath(), "HistoMedic_Temp")
+
+                If Not Directory.Exists(tempFolder) Then
+                    Directory.CreateDirectory(tempFolder)
+                End If
+
+                For Each row As DataRow In dt.Rows
+
+                    Try
+
+                        Dim imagenesProcesadas As Integer = 0
+
+                        For i As Integer = 1 To 5
+
+                            Dim nombreArchivo As String = ""
+
+                            If Not IsDBNull(row("img" & i)) Then
+                                nombreArchivo = row("img" & i).ToString().Trim()
+                            End If
+
+                            'No existe imagen
+                            If String.IsNullOrWhiteSpace(nombreArchivo) Then
+                                imagenesProcesadas += 1
+                                Continue For
+                            End If
+
+                            Dim rutaRemota As String = localFtpHost & "/TB_MATERIALES/" & nombreArchivo
+                            Dim rutaTemporal As String = Path.Combine(tempFolder, nombreArchivo)
+
+                            'Descargar desde FTP Local
+                            If ftpLocalClient.DescargarArchivo(rutaRemota, rutaTemporal) Then
+
+                                If File.Exists(rutaTemporal) Then
+
+                                    'Subir al hosting
+                                    If SubirArchivoHosting(rutaTemporal,
+                                                           nombreArchivo,
+                                                           "/sistema.lfmcontrol.com.mx/Assets/files/productos/") Then
+
+                                        imagenesProcesadas += 1
+                                    End If
+
+                                    'Eliminar archivo temporal
+                                    Try
+                                        File.Delete(rutaTemporal)
+                                    Catch
+                                    End Try
+
+                                End If
+
+                            End If
+
+                        Next
+
+                        'Si las 5 imágenes fueron procesadas (existieran o no)
+                        If imagenesProcesadas = 5 Then
+                            Update_local("tb_materiales_ftp",
+                                         "sinc = 0",
+                                         "Id",
+                                         row("Id").ToString())
+                        End If
+
+                    Catch exRow As Exception
+                        LogEventos.Escribir("Error al procesar ID " &
+                                            row("Id").ToString() &
+                                            ": " &
+                                            exRow.Message)
+                    End Try
+
+                Next
+
+            Catch exTabla As Exception
+                LogEventos.Escribir("Error al consultar tb_materiales_ftp: " & exTabla.Message)
+            End Try
+        Catch ex As Exception
+            LogEventos.Escribir("Error general en ExportarAdjuntos: " & ex.Message)
+        End Try
 
     End Sub
 
 
 #End Region
 
-
-#End Region
 
 End Class
 

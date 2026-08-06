@@ -10,10 +10,10 @@ Imports System.Runtime.InteropServices
 
 ' Revisar los valores de los atributos del ensamblado
 
-<Assembly: AssemblyTitle("Enlace HistoMedic Local - Hosting")> 
-<Assembly: AssemblyDescription("Enlace de Datos Bidireccional Local a Hosting HistoMedic")> 
+<Assembly: AssemblyTitle("Enlace HistoMedic Local - Hosting LFM CONTROL")> 
+<Assembly: AssemblyDescription("Enlace de Datos Bidireccional Local a  Hosting LFM CONTROL")> 
 <Assembly: AssemblyCompany("HistoMedic")> 
-<Assembly: AssemblyProduct("Enlace HistoMedic DataLocal-DataHosting")> 
+<Assembly: AssemblyProduct("Enlace HistoMedic DataLocal-DataHosting LFM CONTROL")> 
 <Assembly: AssemblyCopyright("Derechos Reservados©HistoMedic 2025")> 
 <Assembly: AssemblyTrademark("")> 
 
@@ -33,7 +33,7 @@ Imports System.Runtime.InteropServices
 ' mediante el asterisco ('*'), como se muestra a continuación:
 ' <Assembly: AssemblyVersion("1.0.*")> 
 
-<Assembly: AssemblyVersion("2.3.1.246")> 
-<Assembly: AssemblyFileVersion("2.3.1.246")> 
+<Assembly: AssemblyVersion("2.3.1.248")> 
+<Assembly: AssemblyFileVersion("2.3.1.248")> 
 
 <Assembly: NeutralResourcesLanguageAttribute("")> 
