@@ -52,7 +52,7 @@
     <ProductName>HistoMedic Enlace</ProductName>
     <PublisherName>HistoMedic</PublisherName>
     <SuiteName>HistoMedicApp</SuiteName>
-    <ApplicationRevision>252</ApplicationRevision>
+    <ApplicationRevision>254</ApplicationRevision>
     <ApplicationVersion>2.3.1.%2a</ApplicationVersion>
     <UseApplicationTrust>false</UseApplicationTrust>
     <CreateDesktopShortcut>true</CreateDesktopShortcut>

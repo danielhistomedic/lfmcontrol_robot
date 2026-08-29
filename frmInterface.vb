@@ -30,6 +30,14 @@ Public Class frmInterface
     Private cts As CancellationTokenSource
     Private export_hosting_tarea As Task
 
+    ' =========================================================================
+    ' Control de Estado y Reconexión Servidor Central (Protección HostGator)
+    ' =========================================================================
+    Private _servidorCentralConectado As Boolean = False
+    Private _intentosReconexionCentral As Integer = 0
+    Private _estaReconectandoCentral As Boolean = False
+    Private WithEvents TimerReconexionCentral As New System.Windows.Forms.Timer()
+
 #Region "Propiedades"
 
     Protected str_FTP_USUARIO As String
@@ -74,24 +82,210 @@ Public Class frmInterface
 #Region "Funciones"
 
     Private Function HabilitarEstatusConexionCentral(ByVal valor As Boolean)
+        Try
+            If Me.InvokeRequired Then
+                Me.Invoke(Sub() HabilitarEstatusConexionCentral(valor))
+                Return Nothing
+            End If
 
-        If valor Then
-            Me.btnConectarDBCentral.TextColor = Color.Green
-        Else
-            Me.btnConectarDBCentral.TextColor = Color.Crimson
-        End If
-
+            If valor Then
+                Me.btnConectarDBCentral.TextColor = Color.Green
+            Else
+                Me.btnConectarDBCentral.TextColor = Color.Crimson
+            End If
+        Catch ex As Exception
+        End Try
+        Return Nothing
     End Function
 
     Private Function HabilitarEstatusConexionLocal(ByVal valor As Boolean)
+        Try
+            If Me.InvokeRequired Then
+                Me.Invoke(Sub() HabilitarEstatusConexionLocal(valor))
+                Return Nothing
+            End If
 
-        If valor Then
-            Me.btnConectarLocal.TextColor = Color.Green
-        Else
-            Me.btnConectarLocal.TextColor = Color.Crimson
+            If valor Then
+                Me.btnConectarLocal.TextColor = Color.Green
+            Else
+                Me.btnConectarLocal.TextColor = Color.Crimson
+            End If
+        Catch ex As Exception
+        End Try
+        Return Nothing
+    End Function
+
+    ''' <summary>
+    ''' Comprueba si la conexión al servidor central sigue activa y funcional.
+    ''' Si detecta desconexión, marca el estado y activa la rutina de reconexión.
+    ''' </summary>
+    Public Function DetectarEstadoConexionCentral() As Boolean
+        Try
+            If cx_MySQL_Central Is Nothing OrElse cx_MySQL_Central.State <> ConnectionState.Open Then
+                NotificarDesconexionCentral("Conexión central en estado cerrado o no inicializado.")
+                Return False
+            End If
+
+            ' Ping ligero de comprobación
+            Using cmd As New MySqlConnector.MySqlCommand("SELECT 1;", cx_MySQL_Central)
+                cmd.CommandTimeout = 5
+                cmd.ExecuteScalar()
+            End Using
+
+            _servidorCentralConectado = True
+            HabilitarEstatusConexionCentral(True)
+            Return True
+
+        Catch ex As Exception
+            NotificarDesconexionCentral("Fallo en comprobación de conexión central: " & ex.Message)
+            Return False
+        End Try
+    End Function
+
+    ''' <summary>
+    ''' Notifica y cambia el estado a desconectado, e inicia la rutina de reconexión controlada.
+    ''' </summary>
+    Public Sub NotificarDesconexionCentral(Optional ByVal motivo As String = "")
+        Dim estadoPrevioConectado As Boolean = _servidorCentralConectado
+        _servidorCentralConectado = False
+        HabilitarEstatusConexionCentral(False)
+
+        Dim mensaje As String = "[Conexión Central] Se detectó desconexión del servidor central."
+        If Not String.IsNullOrWhiteSpace(motivo) Then
+            mensaje &= " Detalle: " & motivo
         End If
 
-    End Function
+        If estadoPrevioConectado OrElse Not TimerReconexionCentral.Enabled Then
+            AgregarLog(500, mensaje)
+            IniciarRutinaReconexionCentral()
+        End If
+    End Sub
+
+    ''' <summary>
+    ''' Inicia la rutina de reconexión controlada para el servidor central.
+    ''' Se ejecuta solo mientras la conexión central esté inactiva/desconectada.
+    ''' </summary>
+    Private Sub IniciarRutinaReconexionCentral()
+        If _servidorCentralConectado Then
+            DetenerRutinaReconexionCentral()
+            Exit Sub
+        End If
+
+        If Not TimerReconexionCentral.Enabled Then
+            ' Primer intento tras una breve pausa de 10 segundos
+            TimerReconexionCentral.Interval = 10000 ' 10 segundos
+            TimerReconexionCentral.Enabled = True
+            AgregarLog(100, "[Reconexión Central] Rutina de reconexión activada. Primer reintento en 10 segundos...")
+        End If
+    End Sub
+
+    ''' <summary>
+    ''' Detiene y desactiva la rutina de reconexión una vez restablecida la conexión central.
+    ''' </summary>
+    Private Sub DetenerRutinaReconexionCentral()
+        TimerReconexionCentral.Enabled = False
+        _intentosReconexionCentral = 0
+        _estaReconectandoCentral = False
+    End Sub
+
+    ''' <summary>
+    ''' Cierra de manera segura cualquier conexión central existente para liberar sockets y recursos antes de reconectar.
+    ''' </summary>
+    Private Sub CerrarConexionesCentrales()
+        Try
+            If cx_MySQL_Central IsNot Nothing AndAlso cx_MySQL_Central.State <> ConnectionState.Closed Then
+                cx_MySQL_Central.Close()
+            End If
+        Catch ex As Exception
+        End Try
+
+        Try
+            If cx_MySQL_CentralAsync IsNot Nothing AndAlso cx_MySQL_CentralAsync.State <> ConnectionState.Closed Then
+                cx_MySQL_CentralAsync.Close()
+            End If
+        Catch ex As Exception
+        End Try
+
+        Try
+            If cx_MySQL_CentralAsyncALM IsNot Nothing AndAlso cx_MySQL_CentralAsyncALM.State <> ConnectionState.Closed Then
+                cx_MySQL_CentralAsyncALM.Close()
+            End If
+        Catch ex As Exception
+        End Try
+    End Sub
+
+    ''' <summary>
+    ''' Temporizador de reconexión al servidor central con protección anti-bloqueo para HostGator:
+    ''' - Intento 1: 10 segundos
+    ''' - Intento 2: 30 segundos
+    ''' - Intento 3 en adelante: 5 minutos (300,000 ms) para proteger la IP contra bloqueos en el firewall de HostGator.
+    ''' </summary>
+    Private Sub TimerReconexionCentral_Tick(sender As Object, e As EventArgs) Handles TimerReconexionCentral.Tick
+        If _estaReconectandoCentral Then Exit Sub
+
+        Try
+            _estaReconectandoCentral = True
+            TimerReconexionCentral.Enabled = False
+
+            _intentosReconexionCentral += 1
+            AgregarLog(100, "[Reconexión Central] Ejecutando intento de reconexión #" & _intentosReconexionCentral & "...")
+
+            ' Cerrar sockets/conexiones previas antes de reintentar
+            CerrarConexionesCentrales()
+
+            Dim reconectado As Boolean = False
+            If Not String.IsNullOrWhiteSpace(Me.CLUES) Then
+                reconectado = Me.Conectar_Central(Me.CLUES)
+            End If
+
+            If reconectado Then
+                _servidorCentralConectado = True
+                _intentosReconexionCentral = 0
+                _estaReconectandoCentral = False
+                Me.HabilitarEstatusConexionCentral(True)
+
+                AgregarLog(200, "[Reconexión Central] ¡Conexión con el servidor central restablecida con éxito!")
+
+                ' Reactivar procesos de sincronización
+                If Me.chkActivar.Checked Then
+                    Me.ReiniciarProcesoSP()
+                Else
+                    Me.chkActivar.Checked = True
+                End If
+
+                ' Desactivar rutina de reconexión ya que la conexión está restablecida
+                DetenerRutinaReconexionCentral()
+                Exit Sub
+            Else
+                ' Falló el intento: Programar siguiente según la política de HostGator
+                Dim proximoIntervaloMs As Integer = 300000 ' 5 minutos (300,000 ms)
+                Dim textoIntervalo As String = "5 minutos (Protección Anti-Bloqueo HostGator activa)"
+
+                If _intentosReconexionCentral = 1 Then
+                    ' Si falló el intento 1, reintento 2 en 30 segundos
+                    proximoIntervaloMs = 30000 ' 30 segundos
+                    textoIntervalo = "30 segundos"
+                Else
+                    ' A partir del 2do intento fallido (para intento 3 en adelante):
+                    ' HostGator bloquea IPs por conexiones fallidas repetidas. Reintento cada 5 minutos.
+                    proximoIntervaloMs = 300000 ' 5 minutos
+                    textoIntervalo = "5 minutos (Protección Anti-Bloqueo HostGator activa)"
+                End If
+
+                AgregarLog(500, "[Reconexión Central] Intento #" & _intentosReconexionCentral & " fallido. Próximo intento programado en " & textoIntervalo & ".")
+
+                _estaReconectandoCentral = False
+                TimerReconexionCentral.Interval = proximoIntervaloMs
+                TimerReconexionCentral.Enabled = True
+            End If
+
+        Catch ex As Exception
+            _estaReconectandoCentral = False
+            TimerReconexionCentral.Interval = 300000 ' 5 minutos ante excepciones
+            TimerReconexionCentral.Enabled = True
+            AgregarLog(500, "[Reconexión Central] Error en proceso de reconexión: " & ex.Message & ". Reintentando en 5 minutos.")
+        End Try
+    End Sub
 
     Private Function Conectar_Central(clues) As Boolean
 
@@ -101,26 +295,23 @@ Public Class frmInterface
             Dim Uid As String = ""
             Dim Pwd As String = ""
 
-            'const DB_NAME = "lfmcontr_sistema"; //Producción
-            'const DB_PORT = "3306"; //Producción
-            'const DB_USER = "lfmcontr_admin"; //Producción
-            'const DB_PASSWORD = "fkSp_EkB6dX_"; //Producción
-
-
-            ' ============================================================= =====================================================================
+            ' ==================================================================================================================================
             Dim cadena_conexion_admin As String = "Server=histomedic.mx;Database=mirtheda_admin;Uid=mirtheda_root;Pwd=Bsapmd2cKb*5;SSL Mode=None;"
             If cx_MySQL_Admin.State = ConnectionState.Closed Then
                 If Not Test_MySQL_Admin(cadena_conexion_admin) Then
+                    _servidorCentralConectado = False
+                    Me.HabilitarEstatusConexionCentral(False)
                     Return False
                 End If
             End If
 
             tb_ClienteData = tb_Recordset_MySQL_Admin("SELECT * FROM ssf_clientes WHERE clues = '" & clues & "'")
-            If tb_ClienteData.Rows.Count = 0 Then
-                AgregarLog(500, ".Error de Conexión con el Servidor. ")
+            If tb_ClienteData Is Nothing OrElse tb_ClienteData.Rows.Count = 0 Then
+                AgregarLog(500, ".Error de Conexión con el Servidor (Cliente no encontrado). ")
+                _servidorCentralConectado = False
+                Me.HabilitarEstatusConexionCentral(False)
                 Return False
             End If
-
 
             Database = tb_ClienteData.Rows(0).Item("db_name").ToString
             Uid = tb_ClienteData.Rows(0).Item("db_user").ToString
@@ -128,37 +319,36 @@ Public Class frmInterface
 
             If tb_ClienteData.Rows(0).Item("actualizaciones").ToString <> "SI" Then
                 AgregarLog(500, "No Disponible para actualizaciones. ")
+                _servidorCentralConectado = False
+                Me.HabilitarEstatusConexionCentral(False)
                 Return False
             End If
 
             ' ==================================================================================================================================
 
-            If cx_MySQL_Central.State = ConnectionState.Open Then
-                Me.HabilitarEstatusConexionCentral(True)
-                Return True
-            End If
-
             Dim cadena_conexion As String = "Server=lfmcontrol.com.mx;Database=" & Database & ";Uid=" & Uid & ";Pwd=" & Pwd & ";SSL Mode=None;"
-            If cx_MySQL_Central.State = ConnectionState.Closed Then
-                If Test_MySQL_Central(cadena_conexion) Then
-                    Me.HabilitarEstatusConexionCentral(True)
-                    Test_MySQL_CentralAsync(cadena_conexion)
-                    Test_MySQL_CentralAsyncALM(cadena_conexion)
-                    Return True
-                Else
-                    Return False
-                End If
+
+            CerrarConexionesCentrales()
+
+            If Test_MySQL_Central(cadena_conexion) Then
+                Test_MySQL_CentralAsync(cadena_conexion)
+                Test_MySQL_CentralAsyncALM(cadena_conexion)
+                _servidorCentralConectado = True
+                Me.HabilitarEstatusConexionCentral(True)
+                DetenerRutinaReconexionCentral()
+                Return True
+            Else
+                _servidorCentralConectado = False
+                Me.HabilitarEstatusConexionCentral(False)
+                Return False
             End If
 
         Catch ex As Exception
-
-            AgregarLog(500, ex.Message & ". Equipo No Compatible con WebRequest ")
-            'Me.lstLog.Items.Add(Calcula_FechaActual.ToString)
-            'Me.lstLog.Items(lstLog.Items.Count - 1).SubItems.Add(ex.Message & ". Equipo No Compatible con WebRequest ")
+            _servidorCentralConectado = False
+            Me.HabilitarEstatusConexionCentral(False)
+            AgregarLog(500, ex.Message & ". Error al conectar a Servidor Central")
             Return False
         End Try
-
-        Return True
 
     End Function
 
@@ -223,53 +413,47 @@ Public Class frmInterface
             TimerEnlace.Enabled = False
 
             '======================================
-            ' Rutinas Importar 
+            ' Rutinas de Sincronización
+            ' Solo se ejecutan si el servidor central se encuentra conectado
             '======================================
+            If _servidorCentralConectado Then
+                '== Exportar Archivos Adjuntos 
+                Try
+                    Me.ExportarAdjuntos()
+                Catch ex As Exception
+                    LogEventos.Escribir("ExportarAdjuntos. " & ex.Message)
+                End Try
 
-            '======================================
-            ' Rutinas Exportar 
-            '======================================
+                Try
+                    Me.ExportarAdjuntosAlmacen()
+                Catch ex As Exception
+                    LogEventos.Escribir("ExportarAdjuntosAlmacen. " & ex.Message)
+                End Try
 
-            '== Exportar Archivso Adjuntos 
-            Try
-                Me.ExportarAdjuntos()
-            Catch ex As Exception
-                LogEventos.Escribir("ExportarAdjuntos. " & ex.Message)
-            End Try
+                Try
+                    Me.ExportarAdjuntosFotosMaterial()
+                Catch ex As Exception
+                    LogEventos.Escribir("ExportarAdjuntosFotosMaterial. " & ex.Message)
+                End Try
 
-            Try
-                Me.ExportarAdjuntosAlmacen()
-            Catch ex As Exception
-                LogEventos.Escribir("ExportarAdjuntosAlmacen. " & ex.Message)
-            End Try
-
-            Try
-                Me.ExportarAdjuntosFotosMaterial()
-            Catch ex As Exception
-                LogEventos.Escribir("ExportarAdjuntosFotosMaterial. " & ex.Message)
-            End Try
+                ' == Continuamente verificando si la tarea en segundo plano está activa
+                ReiniciarProcesoSP()
+            Else
+                ' Si la conexión al central está caída, asegurar que la rutina de reconexión esté activa
+                IniciarRutinaReconexionCentral()
+            End If
 
             ' ======================================
-
-            'Me.ProgressBarX1.Value = 0
-
-            '== Reinicia la aplicacion si el log, tiene mas de 3 registros.  == == == == 
+            ' Gestión de memoria del log en pantalla (mantener historial limpio sin reiniciar app)
+            ' ======================================
             Try
-                If lstLog.Items.Count > 5 Then
-                    Me.lstLog.Items.Clear()
-                    Me.DetenerProcesoSP()
-                    TimerEnlace.Enabled = False
-                    Application.Restart()
+                If lstLog.Items.Count > 100 Then
+                    While lstLog.Items.Count > 50
+                        lstLog.Items.RemoveAt(0)
+                    End While
                 End If
             Catch ex As Exception
-                LogEventos.Escribir("Reinicia. " & ex.Message)
             End Try
-
-            ' == == == == == == == == == == == == == == == == == == == == == == == == ==
-
-            ' == Cotinuamente Verificando si la task ya fue terminada
-            ReiniciarProcesoSP()
-            ' == == == == == == == == == == == == == == == =
 
             TimerEnlace.Enabled = True
 
@@ -283,8 +467,10 @@ Public Class frmInterface
     Private Sub ExportarDataToHostingSP_Load(token As CancellationToken)
 
         While Not token.IsCancellationRequested
-            Me.ExportarDataToHostingSP()
-            Me.ExportarDataToHostingSP_Almacen()
+            If _servidorCentralConectado Then
+                Me.ExportarDataToHostingSP()
+                Me.ExportarDataToHostingSP_Almacen()
+            End If
             token.WaitHandle.WaitOne(1000)
         End While
 
@@ -1418,6 +1604,7 @@ intenta_otravz:
             ciclo = ciclo + 1
             If ciclo = 3 Then
                 AgregarLog(500, ex.Message & ", Error al insertar registro central: " & query)
+                NotificarDesconexionCentral("Error al insertar en central: " & ex.Message)
                 Exit Try
             End If
             GoTo intenta_otravz
@@ -1445,6 +1632,7 @@ intenta_otravz:
             ciclo = ciclo + 1
             If ciclo = 3 Then
                 AgregarLog(500, ex.Message & ", Error al insertar registro central Async: " & Cadena)
+                NotificarDesconexionCentral("Error al insertar registro en central: " & ex.Message)
                 Exit Try
             End If
             GoTo intenta_otravz
@@ -1479,6 +1667,7 @@ intenta_otravz:
             ciclo = ciclo + 1
             If ciclo = 3 Then
                 AgregarLog(500, ex.Message & ", Error al leer registro central Async: " & Comando)
+                NotificarDesconexionCentral("Error al leer de central: " & ex.Message)
                 Exit Try
             End If
             GoTo intenta_otravz
@@ -1502,6 +1691,7 @@ intenta_otravz:
             ciclo = ciclo + 1
             If ciclo = 3 Then
                 AgregarLog(500, ex.Message & ", Error al actualizar registro central Async: " & Cadena)
+                NotificarDesconexionCentral("Error al actualizar central: " & ex.Message)
                 Exit Try
             End If
             GoTo intenta_otravz
@@ -1528,6 +1718,7 @@ intenta_otravz:
             ciclo = ciclo + 1
             If ciclo = 3 Then
                 AgregarLog(500, ex.Message & ", Error al actualizar registro central Async: " & Cadena)
+                NotificarDesconexionCentral("Error al actualizar central: " & ex.Message)
                 Exit Try
             End If
             GoTo intenta_otravz
@@ -1547,7 +1738,7 @@ intenta_otravz:
             cx_MySQL_CentralAsync.ConnectionString = str_ConStr
             cx_MySQL_CentralAsync.Open()
 
-            Dim cmd As New MySqlConnector.MySqlCommand("SET time_zone = 'America/Mexico_City';", cx_MySQL_CentralAsyncALM)
+            Dim cmd As New MySqlConnector.MySqlCommand("SET time_zone = 'America/Mexico_City';", cx_MySQL_CentralAsync)
             cmd.ExecuteNonQuery()
 
             Return True
@@ -1625,6 +1816,7 @@ intenta_otravz:
                 ciclo = ciclo + 1
                 If ciclo = 3 Then
                     AgregarLog(500, ex.Message & ", Error al insertar registro central ALM: " & query)
+                    NotificarDesconexionCentral("Error al insertar en central ALM: " & ex.Message)
                     Exit Try
                 End If
                 GoTo intenta_otravz
@@ -1657,6 +1849,7 @@ intenta_otravz:
                 ciclo = ciclo + 1
                 If ciclo = 3 Then
                     AgregarLog(500, ex.Message & ", Error al insertar registro central AsyncALM: " & Cadena)
+                    NotificarDesconexionCentral("Error al insertar registro en central AsyncALM: " & ex.Message)
                     Exit Try
                 End If
                 GoTo intenta_otravz
@@ -1697,6 +1890,7 @@ intenta_otravz:
                 ciclo = ciclo + 1
                 If ciclo = 3 Then
                     AgregarLog(500, ex.Message & ", Error al leer registro central AsyncALM: " & Comando)
+                    NotificarDesconexionCentral("Error al leer de central AsyncALM: " & ex.Message)
                     Exit Try
                 End If
                 GoTo intenta_otravz
@@ -1724,6 +1918,7 @@ intenta_otravz:
                 ciclo = ciclo + 1
                 If ciclo = 3 Then
                     AgregarLog(500, ex.Message & ", Error al actualizar registro central AsyncALM: " & Cadena)
+                    NotificarDesconexionCentral("Error al actualizar central AsyncALM: " & ex.Message)
                     Exit Try
                 End If
                 GoTo intenta_otravz
@@ -1751,12 +1946,19 @@ intenta_otravz:
             If cx_MySQL_CentralAsyncALM.State = ConnectionState.Closed Then cx_MySQL_CentralAsyncALM.Open()
             cmm_Comando.ExecuteNonQuery()
         Catch ex As Exception
-            ciclo = ciclo + 1
-            If ciclo = 3 Then
-                AgregarLog(500, ex.Message & ", Error al actualizar registro central AsyncALM: " & Cadena)
-                Exit Try
+            If cx_MySQL_CentralAsyncALM.State = ConnectionState.Closed Then
+                ciclo = ciclo + 1
+                If ciclo = 3 Then
+                    AgregarLog(500, ex.Message & ", Error al actualizar registro central AsyncALM: " & Cadena)
+                    NotificarDesconexionCentral("Error al actualizar central AsyncALM: " & ex.Message)
+                    Exit Try
+                End If
+                GoTo intenta_otravz
+            Else
+                AgregarLog(500, ex.Message & ", Error al actualizar registro central: " & Cadena)
+                Return False
             End If
-            GoTo intenta_otravz
+            Return False
         End Try
         Return True
 
@@ -1856,6 +2058,7 @@ intenta_otravz:
                 ciclo = ciclo + 1
                 If ciclo = 3 Then
                     AgregarLog(500, ex.Message & ", Error al insertar registro central: " & query)
+                    NotificarDesconexionCentral("Error al insertar en central: " & ex.Message)
                     Exit Try
                 End If
                 GoTo intenta_otravz
@@ -1888,6 +2091,7 @@ intenta_otravz:
                 ciclo = ciclo + 1
                 If ciclo = 3 Then
                     AgregarLog(500, ex.Message & ", Error al insertar registro central: " & Cadena)
+                    NotificarDesconexionCentral("Error al insertar registro en central: " & ex.Message)
                     Exit Try
                 End If
                 GoTo intenta_otravz
@@ -1928,6 +2132,7 @@ intenta_otravz:
                 ciclo = ciclo + 1
                 If ciclo = 3 Then
                     AgregarLog(500, ex.Message & ", Error al leer registro central: " & Comando)
+                    NotificarDesconexionCentral("Error al leer de central: " & ex.Message)
                     Exit Try
                 End If
                 GoTo intenta_otravz
@@ -1955,6 +2160,7 @@ intenta_otravz:
                 ciclo = ciclo + 1
                 If ciclo = 3 Then
                     AgregarLog(500, ex.Message & ", Error al actualizar registro central: " & Cadena)
+                    NotificarDesconexionCentral("Error al actualizar central: " & ex.Message)
                     Exit Try
                 End If
                 GoTo intenta_otravz
@@ -1986,6 +2192,7 @@ intenta_otravz:
                 ciclo = ciclo + 1
                 If ciclo = 3 Then
                     AgregarLog(500, ex.Message & ", Error al actualizar registro central: " & Cadena)
+                    NotificarDesconexionCentral("Error al actualizar central: " & ex.Message)
                     Exit Try
                 End If
                 GoTo intenta_otravz
@@ -2009,7 +2216,7 @@ intenta_otravz:
             cx_MySQL_Central.ConnectionString = str_ConStr
             cx_MySQL_Central.Open()
 
-            Dim cmd As New MySqlConnector.MySqlCommand("SET time_zone = 'America/Mexico_City';", cx_MySQL_CentralAsyncALM)
+            Dim cmd As New MySqlConnector.MySqlCommand("SET time_zone = 'America/Mexico_City';", cx_MySQL_Central)
             cmd.ExecuteNonQuery()
 
             Return True
@@ -2719,8 +2926,9 @@ intenta_otravz:
                 IniciarProcesosSP()
 
             Else
-                chkActivar.Checked = False
-                chkActivar.Enabled = False
+                Me.Text = Me.Text & " " & Application.ProductVersion
+                chkActivar.Checked = True
+                Me.NotificarDesconexionCentral("No fue posible conectar al servidor central al iniciar.")
             End If
 
         Else
@@ -2730,6 +2938,19 @@ intenta_otravz:
         End If
 
         load_init = False
+
+    End Sub
+
+    Private Sub btnConectarDBCentral_Click(sender As Object, e As EventArgs) Handles btnConectarDBCentral.Click
+
+        If Not _servidorCentralConectado Then
+            AgregarLog(100, "[Manual] Verificando e intentando reconexión al servidor central...")
+            TimerReconexionCentral.Enabled = False
+            TimerReconexionCentral.Interval = 1000 ' Iniciar reintento inmediato
+            TimerReconexionCentral.Enabled = True
+        Else
+            AgregarLog(200, "[Central] La conexión al servidor central ya se encuentra activa y funcional.")
+        End If
 
     End Sub
 
