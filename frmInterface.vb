@@ -238,6 +238,12 @@ Public Class frmInterface
             End Try
 
             Try
+                Me.ExportarAdjuntosAlmacen()
+            Catch ex As Exception
+                LogEventos.Escribir("ExportarAdjuntosAlmacen. " & ex.Message)
+            End Try
+
+            Try
                 Me.ExportarAdjuntosFotosMaterial()
             Catch ex As Exception
                 LogEventos.Escribir("ExportarAdjuntosFotosMaterial. " & ex.Message)
@@ -525,6 +531,12 @@ Public Class frmInterface
                             },
                               {
                                 "tb_ventas_adjuntos",
+                                New HashSet(Of String)(StringComparer.OrdinalIgnoreCase) From {
+                                    "sinc"
+                                }
+                            },
+                              {
+                                "tb_ventas_seguimiento",
                                 New HashSet(Of String)(StringComparer.OrdinalIgnoreCase) From {
                                     "sinc"
                                 }
@@ -2783,7 +2795,6 @@ intenta_otravz:
 
 #End Region
 
-
 #Region "Adjuntos"
 
     Private Sub ExportarAdjuntos()
@@ -2794,6 +2805,7 @@ intenta_otravz:
                 "tb_compras_cotizaciones_adjuntos",
                 "tb_compras_cotizacion_interna_adjuntos",
                 "tb_pedidos_proveedor_adjuntos",
+                "tb_ventas_seguimiento",
                 "tb_ventas_cotizacion_cliente_adjuntos",
                 "tb_ventas_adjuntos"
             }
@@ -2990,6 +3002,91 @@ intenta_otravz:
         Catch ex As Exception
             LogEventos.Escribir("Error general en ExportarAdjuntosFotosMaterial: " & ex.Message)
         End Try
+
+    End Sub
+
+    Private Sub ExportarAdjuntosAlmacen()
+
+         Try
+            Dim tablas() As String = {
+                "tb_recibos_compdigitales"
+            }
+
+            Dim rawIp As String = Me.FTP_IP
+            If String.IsNullOrWhiteSpace(rawIp) Then rawIp = IpServidor
+            If String.IsNullOrWhiteSpace(rawIp) Then rawIp = "127.0.0.1"
+
+            rawIp = rawIp.Replace("ftp://", "").Replace("ftps://", "").Replace("http://", "").Trim("/"c, " "c)
+            If String.IsNullOrWhiteSpace(rawIp) Then rawIp = "127.0.0.1"
+
+            Dim localFtpHost As String = "ftp://" & rawIp
+
+            Dim localFtpUser As String = Me.FTP_USUARIO
+            Dim localFtpPass As String = Me.FTP_PASSWORD
+
+            Dim ftpLocalClient As New FtpClient(localFtpHost, localFtpUser, localFtpPass)
+
+            For Each tabla As String In tablas
+                Try
+                    Dim query As String = "SELECT * FROM " & tabla & " WHERE sinc = 1"
+                    Dim dt As DataTable = tb_Recordset_MySQL_local(query)
+
+                    If dt IsNot Nothing AndAlso dt.Rows.Count > 0 Then
+                        For Each row As DataRow In dt.Rows
+                            Try
+                                If Not IsDBNull(row("documento_ftp")) AndAlso Not String.IsNullOrWhiteSpace(row("documento_ftp").ToString()) Then
+                                    Dim nombreArchivo As String = row("documento_ftp").ToString().Trim()
+                                    Dim rutaRemotaLocal As String = localFtpHost & "/TB_RECIBOS/" & nombreArchivo
+
+                                    Dim tempFolder As String = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "HistoMedic_Temp")
+                                    If Not System.IO.Directory.Exists(tempFolder) Then
+                                        System.IO.Directory.CreateDirectory(tempFolder)
+                                    End If
+                                    Dim rutaTemporalLocal As String = System.IO.Path.Combine(tempFolder, nombreArchivo)
+
+                                    ' 1. Descargar de FTP Local usando FtpClient.vb
+                                    Dim descargado As Boolean = ftpLocalClient.DescargarArchivo(rutaRemotaLocal, rutaTemporalLocal)
+
+                                    If descargado AndAlso System.IO.File.Exists(rutaTemporalLocal) Then
+                                        ' 2. Subir al hosting de Hostgator
+                                        Dim subido As Boolean = SubirArchivoHosting(rutaTemporalLocal, nombreArchivo, "/sistema.lfmcontrol.com.mx/Assets/files/ventas/")
+
+                                        If subido Then
+                                            ' 3. Actualizar sinc = 0 en la tabla local de origen
+                                            Dim campoCond As String = "icvereciboscompdigitales"
+                                            Dim valorCond As String = ""
+                                            If dt.Columns.Contains("icvereciboscompdigitales") AndAlso Not IsDBNull(row("icvereciboscompdigitales")) Then
+                                                valorCond = row("icvereciboscompdigitales").ToString()
+                                            Else
+                                                campoCond = "documento_ftp"
+                                                valorCond = nombreArchivo
+                                            End If
+
+                                            Update_local(tabla, "sinc = 0", campoCond, valorCond)
+                                        End If
+
+                                        ' Limpiar archivo temporal local
+                                        Try
+                                            If System.IO.File.Exists(rutaTemporalLocal) Then
+                                                System.IO.File.Delete(rutaTemporalLocal)
+                                            End If
+                                        Catch exClean As Exception
+                                        End Try
+                                    End If
+                                End If
+                            Catch exRow As Exception
+                                LogEventos.Escribir("Error al procesar registro en " & tabla & ": " & exRow.Message)
+                            End Try
+                        Next
+                    End If
+                Catch exTabla As Exception
+                    LogEventos.Escribir("Error al consultar la tabla " & tabla & ": " & exTabla.Message)
+                End Try
+            Next
+        Catch ex As Exception
+            LogEventos.Escribir("Error general en ExportarAdjuntos: " & ex.Message)
+        End Try
+
 
     End Sub
 
