@@ -38,6 +38,12 @@ Public Class frmInterface
     Private _estaReconectandoCentral As Boolean = False
     Private WithEvents TimerReconexionCentral As New System.Windows.Forms.Timer()
 
+    ' =========================================================================
+    ' Control de Notificaciones a Compras (FLOWserve y DIVERSOS)
+    ' =========================================================================
+    Private _ultimoChequeoNotificaciones As DateTime = DateTime.MinValue
+    Private _procesandoNotificaciones As Boolean = False
+
 #Region "Propiedades"
 
     Protected str_FTP_USUARIO As String
@@ -442,6 +448,19 @@ Public Class frmInterface
                 ' Si la conexión al central está caída, asegurar que la rutina de reconexión esté activa
                 IniciarRutinaReconexionCentral()
             End If
+
+            ' ======================================
+            ' Notificaciones Automáticas a Compras (FLOWserve y DIVERSOS)
+            ' ======================================
+            Try
+                If Not _procesandoNotificaciones AndAlso (DateTime.Now.Subtract(_ultimoChequeoNotificaciones).TotalMinutes >= 15) Then
+                    _ultimoChequeoNotificaciones = DateTime.Now
+                    Me.NotificarCotizacionesPendientesFlowserve()
+                    Me.NotificarCotizacionesPendientesDiversos()
+                End If
+            Catch exNotif As Exception
+                LogEventos.Escribir("Error en ciclo de notificaciones automáticas: " & exNotif.Message)
+            End Try
 
             ' ======================================
             ' Gestión de memoria del log en pantalla (mantener historial limpio sin reiniciar app)
@@ -3310,6 +3329,482 @@ intenta_otravz:
 
 
     End Sub
+
+#End Region
+
+#Region "Notificaciones Cotizaciones Pendientes Compras"
+
+    ''' <summary>
+    ''' Rutina automática para notificar al personal de compras las partidas pendientes de cotizar de FLOWserve.
+    ''' </summary>
+    Public Sub NotificarCotizacionesPendientesFlowserve()
+        Try
+            ProcesarNotificacionCotizacionesPendientes(
+                "FLOWserve",
+                "frecuencia_notifica_flowserve",
+                "correos_segcot_compras_flowserve",
+                "fecha_ultima_notifica_flowserve",
+                New Integer() {2, 3, 4, 6}
+            )
+        Catch ex As Exception
+            AgregarLog(500, "Error en NotificarCotizacionesPendientesFlowserve: " & ex.Message)
+            LogEventos.Escribir("Error en NotificarCotizacionesPendientesFlowserve: " & ex.Message)
+        End Try
+    End Sub
+
+    ''' <summary>
+    ''' Rutina automática para notificar al personal de compras las partidas pendientes de cotizar de DIVERSOS.
+    ''' </summary>
+    Public Sub NotificarCotizacionesPendientesDiversos()
+        Try
+            ProcesarNotificacionCotizacionesPendientes(
+                "DIVERSOS",
+                "frecuencia_notifica_diversos",
+                "correos_segcot_compras_diversos",
+                "fecha_ultima_notifica_diversos",
+                New Integer() {5, 6}
+            )
+        Catch ex As Exception
+            AgregarLog(500, "Error en NotificarCotizacionesPendientesDiversos: " & ex.Message)
+            LogEventos.Escribir("Error en NotificarCotizacionesPendientesDiversos: " & ex.Message)
+        End Try
+    End Sub
+
+    ''' <summary>
+    ''' Lógica unificada para procesar notificaciones automáticas de compras.
+    ''' Parametriza clasificación, frecuencia, destinatarios y columna de última fecha.
+    ''' </summary>
+    Private Sub ProcesarNotificacionCotizacionesPendientes(ByVal tipoNotificacion As String,
+                                                          ByVal campoFrecuencia As String,
+                                                          ByVal campoDestinatarios As String,
+                                                          ByVal campoFechaUltima As String,
+                                                          ByVal clasificacionesIds As Integer())
+        If _procesandoNotificaciones Then Return
+
+        _procesandoNotificaciones = True
+        Try
+            If cx_MySQL_local.State = ConnectionState.Closed Then
+                Try
+                    cx_MySQL_local.Open()
+                Catch exConn As Exception
+                    AgregarLog(500, String.Format("[{0}] No se pudo conectar a la BD local: {1}", tipoNotificacion, exConn.Message))
+                    Return
+                End Try
+            End If
+
+            ' 1. Obtener configuración de cat_consultorio
+            Dim sqlConfig As String = String.Format("SELECT {0}, {1}, {2} FROM cat_consultorio LIMIT 1",
+                                                    campoFrecuencia, campoDestinatarios, campoFechaUltima)
+            Dim dtConfig As DataTable = tb_Recordset_MySQL_local(sqlConfig)
+            If dtConfig Is Nothing OrElse dtConfig.Rows.Count = 0 Then
+                AgregarLog(500, String.Format("[{0}] Configuración no encontrada en cat_consultorio.", tipoNotificacion))
+                Return
+            End If
+
+            Dim rowConf As DataRow = dtConfig.Rows(0)
+
+            ' Validar que la frecuencia sea mayor a 0
+            Dim frecuenciaDias As Integer = 0
+            If Not IsDBNull(rowConf(campoFrecuencia)) AndAlso IsNumeric(rowConf(campoFrecuencia)) Then
+                frecuenciaDias = Convert.ToInt32(rowConf(campoFrecuencia))
+            End If
+
+            If frecuenciaDias <= 0 Then
+                LogEventos.Escribir(String.Format("[{0}] Notificación omitida: frecuencia configurada ({1}) debe ser mayor a 0.", tipoNotificacion, frecuenciaDias))
+                Return
+            End If
+
+            ' Validar que existan destinatarios
+            Dim destinatarios As String = ""
+            If Not IsDBNull(rowConf(campoDestinatarios)) Then
+                destinatarios = rowConf(campoDestinatarios).ToString().Trim()
+            End If
+
+            If String.IsNullOrWhiteSpace(destinatarios) Then
+                AgregarLog(500, String.Format("[{0}] Notificación omitida: no hay destinatarios en cat_consultorio.{1}.", tipoNotificacion, campoDestinatarios))
+                Return
+            End If
+
+            ' Validar fecha de última notificación para respetar frecuencia y evitar duplicados
+            Dim fechaUltimaNotif As Nullable(Of DateTime) = Nothing
+            If Not IsDBNull(rowConf(campoFechaUltima)) Then
+                Dim tmpFecha As DateTime
+                If DateTime.TryParse(rowConf(campoFechaUltima).ToString(), tmpFecha) Then
+                    fechaUltimaNotif = tmpFecha
+                End If
+            End If
+
+            If fechaUltimaNotif.HasValue Then
+                Dim diasTranscurridos As Integer = CInt(Math.Floor((DateTime.Now.Date - fechaUltimaNotif.Value.Date).TotalDays))
+                If diasTranscurridos < frecuenciaDias Then
+                    ' Aún no transcurren los días requeridos por la frecuencia
+                    Return
+                End If
+            End If
+
+            ' 2. Consultar partidas pendientes con SQL parametrizado
+            Dim paramNames As New List(Of String)()
+            Dim cmm As New MySqlConnector.MySqlCommand()
+            cmm.Connection = cx_MySQL_local
+
+            For i As Integer = 0 To clasificacionesIds.Length - 1
+                Dim pName As String = "@clasif" & i
+                paramNames.Add(pName)
+                cmm.Parameters.AddWithValue(pName, clasificacionesIds(i))
+            Next
+
+            Dim sqlPartidas As String =
+                "SELECT " & _
+                "  cp.id AS clasificacion_id, " & _
+                "  COALESCE(cp.clasificacion, 'SIN CLASIFICACIÓN') AS clasificacion_nombre, " & _
+                "  c.id AS cotizacion_id, " & _
+                "  COALESCE(c.folio_solicitud, '') AS folio_solicitud, " & _
+                "  COALESCE(c.folio_cotizacion, '') AS folio_cotizacion, " & _
+                "  c.fecha AS fecha_solicitud, " & _
+                "  COALESCE(c.oportunidad_sistema_flowserve, '') AS oportunidad_flowserve, " & _
+                "  v.id AS venta_id, " & _
+                "  COALESCE(v.proyecto_id, '') AS proyecto_id, " & _
+                "  COALESCE(v.titulo, '') AS proyecto_titulo, " & _
+                "  COALESCE(v.cliente_final, '') AS cliente_final, " & _
+                "  COALESCE(p.cDatGenRazonSocial, p.cDatGenNombreAbreviado, 'PROVEEDOR NO ASIGNADO') AS proveedor_nombre, " & _
+                "  cd.id AS detalle_id, " & _
+                "  COALESCE(cd.venta_detalle_id_partida, cd.id) AS partida_num, " & _
+                "  COALESCE(cd.descripcion_proveedor, '') AS descripcion_proveedor, " & _
+                "  COALESCE(cd.descripcion_adicional, '') AS descripcion_adicional, " & _
+                "  COALESCE(cd.cantidad, 0) AS cantidad, " & _
+                "  COALESCE(cd.ccveunidad, 'pza') AS unidad, " & _
+                "  COALESCE(cd.codigo_proveedor, '') AS codigo_proveedor, " & _
+                "  COALESCE(cd.num_parte, '') AS num_parte, " & _
+                "  COALESCE(cd.ccvematerial, '') AS ccvematerial, " & _
+                "  COALESCE(cd.tiempo_entrega, '') AS tiempo_entrega, " & _
+                "  cd.precio_unitario " & _
+                "FROM tb_compras_cotizaciones c " & _
+                "INNER JOIN tb_compras_cotizaciones_detalle cd ON c.id = cd.cotizacion_id " & _
+                "INNER JOIN tb_ventas v ON c.venta_id = v.id " & _
+                "LEFT JOIN cat_clasificacion_proyectos cp ON v.clasificacion_proyecto_id = cp.id " & _
+                "LEFT JOIN tb_proveedores p ON c.proveedor_id = p.icveProveedor " & _
+                "WHERE c.enviado = 0 " & _
+                "  AND (cd.precio_unitario = 0 OR cd.precio_unitario IS NULL) " & _
+                "  AND v.clasificacion_proyecto_id IN (" & String.Join(",", paramNames) & ") " & _
+                "ORDER BY cp.clasificacion, c.folio_solicitud, cd.id;"
+
+            cmm.CommandText = sqlPartidas
+            Dim dtPartidas As New DataTable()
+            Dim da As New MySqlConnector.MySqlDataAdapter(cmm)
+            da.Fill(dtPartidas)
+
+            ' 3. Enviar únicamente si existen partidas pendientes
+            If dtPartidas.Rows.Count = 0 Then
+                LogEventos.Escribir(String.Format("[{0}] No existen partidas pendientes de cotizar. No se envía correo.", tipoNotificacion))
+                Return
+            End If
+
+            AgregarLog(100, String.Format("[{0}] Se encontraron {1} partidas pendientes de cotizar. Generando correo HTML...", tipoNotificacion, dtPartidas.Rows.Count))
+
+            ' 4. Generar HTML y Asunto
+            Dim htmlCuerpo As String = GenerarHtmlCotizacionesPendientes(tipoNotificacion, dtPartidas, frecuenciaDias)
+            Dim asunto As String = String.Format("[LFMControl] Cotizaciones Pendientes de Cotizar - {0} ({1} partidas)", tipoNotificacion, dtPartidas.Rows.Count)
+
+            ' 5. Enviar correo a los destinatarios configurados
+            Dim enviadoExitoso As Boolean = EnviarCorreoNotificacionHTML(destinatarios, asunto, htmlCuerpo)
+
+            If enviadoExitoso Then
+                ' 6. Actualizar fecha_ultima_notifica en cat_consultorio para evitar duplicados
+                Dim sqlUpdate As String = String.Format("UPDATE cat_consultorio SET {0} = NOW()", campoFechaUltima)
+                Using cmmUpd As New MySqlConnector.MySqlCommand(sqlUpdate, cx_MySQL_local)
+                    If cx_MySQL_local.State = ConnectionState.Closed Then cx_MySQL_local.Open()
+                    cmmUpd.ExecuteNonQuery()
+                End Using
+
+                AgregarLog(200, String.Format("[{0}] Notificación enviada con éxito a: {1} ({2} partidas notificadas).", tipoNotificacion, destinatarios, dtPartidas.Rows.Count))
+            Else
+                AgregarLog(500, String.Format("[{0}] Error al enviar correo a: {1}. Se reintentará en el próximo ciclo.", tipoNotificacion, destinatarios))
+            End If
+
+        Catch ex As Exception
+            AgregarLog(500, String.Format("Error en ProcesarNotificacionCotizacionesPendientes ({0}): {1}", tipoNotificacion, ex.Message))
+            LogEventos.Escribir(String.Format("Error en ProcesarNotificacionCotizacionesPendientes ({0}): {1} - Stack: {2}", tipoNotificacion, ex.Message, ex.StackTrace))
+        Finally
+            _procesandoNotificaciones = False
+        End Try
+    End Sub
+
+    ''' <summary>
+    ''' Construye el cuerpo del correo en HTML jerárquico:
+    ''' Clasificación de Proyecto -> Solicitud de Cotización -> Partidas Pendientes
+    ''' </summary>
+    Private Function GenerarHtmlCotizacionesPendientes(ByVal tipoNotificacion As String, ByVal dt As DataTable, ByVal frecuenciaDias As Integer) As String
+        Dim sb As New System.Text.StringBuilder()
+
+        ' Agrupar datos por clasificación
+        Dim clasificaciones As New List(Of String)()
+        For Each r As DataRow In dt.Rows
+            Dim cName As String = If(Not IsDBNull(r("clasificacion_nombre")), r("clasificacion_nombre").ToString().Trim(), "SIN CLASIFICACIÓN")
+            If Not clasificaciones.Contains(cName) Then
+                clasificaciones.Add(cName)
+            End If
+        Next
+
+        ' Conteo de solicitudes únicas
+        Dim totalSolicitudes As New HashSet(Of String)()
+        For Each r As DataRow In dt.Rows
+            Dim keySol As String = If(Not IsDBNull(r("cotizacion_id")), r("cotizacion_id").ToString(), "")
+            totalSolicitudes.Add(keySol)
+        Next
+
+        sb.AppendLine("<!DOCTYPE html>")
+        sb.AppendLine("<html>")
+        sb.AppendLine("<head>")
+        sb.AppendLine("<meta http-equiv=""Content-Type"" content=""text/html; charset=utf-8"" />")
+        sb.AppendLine("<style type=""text/css"">")
+        sb.AppendLine("  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f1f5f9; margin: 0; padding: 20px; color: #1e293b; }")
+        sb.AppendLine("  .container { max-width: 900px; margin: 0 auto; background-color: #ffffff; border: 1px solid #cbd5e1; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); }")
+        sb.AppendLine("  .header { background: linear-gradient(135deg, #0f172a 0%, #1e3a8a 100%); color: #ffffff; padding: 24px 30px; text-align: left; }")
+        sb.AppendLine("  .header h1 { margin: 0 0 6px 0; font-size: 20px; font-weight: 700; letter-spacing: -0.5px; }")
+        sb.AppendLine("  .header p { margin: 0; font-size: 13px; color: #cbd5e1; }")
+        sb.AppendLine("  .stats-bar { display: table; width: 100%; background-color: #f8fafc; border-bottom: 1px solid #e2e8f0; padding: 12px 30px; box-sizing: border-box; }")
+        sb.AppendLine("  .stat-item { display: table-cell; vertical-align: middle; font-size: 12px; color: #475569; }")
+        sb.AppendLine("  .stat-badge { display: inline-block; background-color: #1e3a8a; color: #ffffff; font-weight: bold; border-radius: 12px; padding: 2px 8px; font-size: 11px; margin-left: 4px; }")
+        sb.AppendLine("  .content { padding: 25px 30px; }")
+        sb.AppendLine("  .clasif-section { margin-bottom: 30px; }")
+        sb.AppendLine("  .clasif-title { background: #e0e7ff; color: #1e1b4b; font-size: 15px; font-weight: 700; padding: 10px 16px; border-left: 5px solid #2563eb; border-radius: 4px; margin-bottom: 16px; text-transform: uppercase; }")
+        sb.AppendLine("  .solicitud-card { background: #ffffff; border: 1px solid #e2e8f0; border-radius: 6px; margin-bottom: 20px; overflow: hidden; }")
+        sb.AppendLine("  .solicitud-header { background-color: #f8fafc; border-bottom: 1px solid #e2e8f0; padding: 12px 16px; }")
+        sb.AppendLine("  .sol-title { font-size: 14px; font-weight: 700; color: #0f172a; margin-bottom: 4px; }")
+        sb.AppendLine("  .sol-meta { font-size: 12px; color: #475569; line-height: 1.5; }")
+        sb.AppendLine("  .sol-meta strong { color: #1e293b; }")
+        sb.AppendLine("  table.items-table { width: 100%; border-collapse: collapse; font-size: 12px; text-align: left; }")
+        sb.AppendLine("  table.items-table th { background-color: #f1f5f9; color: #334155; font-weight: 600; padding: 9px 12px; border-bottom: 2px solid #cbd5e1; font-size: 11px; text-transform: uppercase; }")
+        sb.AppendLine("  table.items-table td { padding: 9px 12px; border-bottom: 1px solid #e2e8f0; vertical-align: top; }")
+        sb.AppendLine("  table.items-table tr:nth-child(even) { background-color: #f8fafc; }")
+        sb.AppendLine("  .tag-code { display: inline-block; background-color: #f1f5f9; border: 1px solid #cbd5e1; border-radius: 3px; padding: 1px 5px; font-family: Consolas, monospace; font-size: 11px; color: #0f172a; }")
+        sb.AppendLine("  .desc-adic { font-size: 11px; color: #64748b; margin-top: 3px; font-style: italic; }")
+        sb.AppendLine("  .footer { background-color: #f8fafc; border-top: 1px solid #e2e8f0; padding: 18px 30px; font-size: 11px; color: #64748b; text-align: center; }")
+        sb.AppendLine("</style>")
+        sb.AppendLine("</head>")
+        sb.AppendLine("<body>")
+        sb.AppendLine("<div class=""container"">")
+
+        ' Encabezado principal
+        sb.AppendLine("  <div class=""header"">")
+        sb.AppendLine(String.Format("    <h1>Notificación de Cotizaciones Pendientes - {0}</h1>", System.Net.WebUtility.HtmlEncode(tipoNotificacion)))
+        sb.AppendLine(String.Format("    <p>Partidas pendientes de cotizar registradas en solicitudes a proveedores &bull; Generado el {0}</p>", DateTime.Now.ToString("dd/MM/yyyy HH:mm:ss")))
+        sb.AppendLine("  </div>")
+
+        ' Barra de estadísticas
+        sb.AppendLine("  <div class=""stats-bar"">")
+        sb.AppendLine(String.Format("    <div class=""stat-item"">Solicitudes con pendientes: <span class=""stat-badge"">{0}</span></div>", totalSolicitudes.Count))
+        sb.AppendLine(String.Format("    <div class=""stat-item"">Total Partidas Pendientes: <span class=""stat-badge"">{0}</span></div>", dt.Rows.Count))
+        sb.AppendLine(String.Format("    <div class=""stat-item"" style=""text-align: right;"">Frecuencia programada: <strong>Cada {0} día(s)</strong></div>", frecuenciaDias))
+        sb.AppendLine("  </div>")
+
+        sb.AppendLine("  <div class=""content"">")
+
+        ' Nivel 1: Clasificación de Proyecto
+        For Each clasif In clasificaciones
+            Dim clasifCurrent As String = clasif
+            Dim rowsClasif As DataRow() = dt.Select(String.Format("clasificacion_nombre = '{0}'", clasifCurrent.Replace("'", "''")))
+
+            sb.AppendLine("    <div class=""clasif-section"">")
+            sb.AppendLine(String.Format("      <div class=""clasif-title"">&#9658; Clasificación: {0} ({1} partidas)</div>", System.Net.WebUtility.HtmlEncode(clasifCurrent), rowsClasif.Length))
+
+            ' Nivel 2: Solicitudes de Cotización dentro de la clasificación
+            Dim cotizacionIds As New List(Of String)()
+            For Each r In rowsClasif
+                Dim cotIdStr As String = r("cotizacion_id").ToString()
+                If Not cotizacionIds.Contains(cotIdStr) Then
+                    cotizacionIds.Add(cotIdStr)
+                End If
+            Next
+
+            For Each cotIdStr In cotizacionIds
+                Dim idCurrent As String = cotIdStr
+                Dim rowsCot As DataRow() = dt.Select(String.Format("clasificacion_nombre = '{0}' AND cotizacion_id = {1}", clasifCurrent.Replace("'", "''"), idCurrent))
+                If rowsCot.Length = 0 Then Continue For
+
+                Dim primerRow As DataRow = rowsCot(0)
+                Dim folioSol As String = If(Not IsDBNull(primerRow("folio_solicitud")) AndAlso Not String.IsNullOrWhiteSpace(primerRow("folio_solicitud").ToString()), primerRow("folio_solicitud").ToString().Trim(), "ID #" & idCurrent)
+                Dim folioCot As String = If(Not IsDBNull(primerRow("folio_cotizacion")), primerRow("folio_cotizacion").ToString().Trim(), "")
+                Dim fchSolStr As String = If(Not IsDBNull(primerRow("fecha_solicitud")), Format(primerRow("fecha_solicitud"), "dd/MM/yyyy"), "-")
+                Dim pryId As String = If(Not IsDBNull(primerRow("proyecto_id")), primerRow("proyecto_id").ToString().Trim(), "")
+                Dim pryTit As String = If(Not IsDBNull(primerRow("proyecto_titulo")), primerRow("proyecto_titulo").ToString().Trim(), "")
+                Dim provNom As String = If(Not IsDBNull(primerRow("proveedor_nombre")), primerRow("proveedor_nombre").ToString().Trim(), "PROVEEDOR NO ASIGNADO")
+                Dim oportFlow As String = If(Not IsDBNull(primerRow("oportunidad_flowserve")), primerRow("oportunidad_flowserve").ToString().Trim(), "")
+                Dim clieFinal As String = If(Not IsDBNull(primerRow("cliente_final")), primerRow("cliente_final").ToString().Trim(), "")
+
+                sb.AppendLine("      <div class=""solicitud-card"">")
+                sb.AppendLine("        <div class=""solicitud-header"">")
+                sb.AppendLine(String.Format("          <div class=""sol-title"">Solicitud: {0}{1} &bull; Proveedor: {2}</div>",
+                                            System.Net.WebUtility.HtmlEncode(folioSol),
+                                            If(Not String.IsNullOrWhiteSpace(folioCot), " (Cotiz: " & System.Net.WebUtility.HtmlEncode(folioCot) & ")", ""),
+                                            System.Net.WebUtility.HtmlEncode(provNom)))
+
+                sb.AppendLine("          <div class=""sol-meta"">")
+                sb.AppendLine(String.Format("            <strong>Proyecto:</strong> {0} - {1} &bull; <strong>Fecha Solicitud:</strong> {2}",
+                                            System.Net.WebUtility.HtmlEncode(pryId),
+                                            System.Net.WebUtility.HtmlEncode(pryTit),
+                                            System.Net.WebUtility.HtmlEncode(fchSolStr)))
+
+                If Not String.IsNullOrWhiteSpace(clieFinal) Then
+                    sb.AppendLine(String.Format(" &bull; <strong>Cliente Final:</strong> {0}", System.Net.WebUtility.HtmlEncode(clieFinal)))
+                End If
+                If Not String.IsNullOrWhiteSpace(oportFlow) Then
+                    sb.AppendLine(String.Format(" &bull; <strong>Oportunidad Flowserve:</strong> {0}", System.Net.WebUtility.HtmlEncode(oportFlow)))
+                End If
+
+                sb.AppendLine("          </div>")
+                sb.AppendLine("        </div>")
+
+                ' Nivel 3: Tabla de Partidas Pendientes
+                sb.AppendLine("        <table class=""items-table"">")
+                sb.AppendLine("          <thead>")
+                sb.AppendLine("            <tr>")
+                sb.AppendLine("              <th style=""width: 5%; text-align: center;"">#</th>")
+                sb.AppendLine("              <th style=""width: 12%; text-align: center;"">Cantidad</th>")
+                sb.AppendLine("              <th style=""width: 13%;"">Cód. Prov.</th>")
+                sb.AppendLine("              <th style=""width: 15%;"">No. Parte</th>")
+                sb.AppendLine("              <th style=""width: 43%;"">Descripción / Concepto</th>")
+                sb.AppendLine("              <th style=""width: 12%; text-align: center;"">T. Entrega</th>")
+                sb.AppendLine("            </tr>")
+                sb.AppendLine("          </thead>")
+                sb.AppendLine("          <tbody>")
+
+                For Each r In rowsCot
+                    Dim partidaNum As String = If(Not IsDBNull(r("partida_num")), r("partida_num").ToString(), "-")
+                    Dim cantVal As Double = If(Not IsDBNull(r("cantidad")), Convert.ToDouble(r("cantidad")), 0)
+                    Dim unidadStr As String = If(Not IsDBNull(r("unidad")), r("unidad").ToString().Trim(), "pza")
+                    Dim codProv As String = If(Not IsDBNull(r("codigo_proveedor")), r("codigo_proveedor").ToString().Trim(), "")
+                    Dim numParte As String = If(Not IsDBNull(r("num_parte")), r("num_parte").ToString().Trim(), "")
+                    Dim descProv As String = If(Not IsDBNull(r("descripcion_proveedor")), r("descripcion_proveedor").ToString().Trim(), "")
+                    Dim descAdic As String = If(Not IsDBNull(r("descripcion_adicional")), r("descripcion_adicional").ToString().Trim(), "")
+                    Dim tiempoEnt As String = If(Not IsDBNull(r("tiempo_entrega")), r("tiempo_entrega").ToString().Trim(), "")
+
+                    sb.AppendLine("            <tr>")
+                    sb.AppendLine(String.Format("              <td style=""text-align: center; font-weight: bold; color: #475569;"">{0}</td>", System.Net.WebUtility.HtmlEncode(partidaNum)))
+                    sb.AppendLine(String.Format("              <td style=""text-align: center; font-weight: bold;"">{0:N2} {1}</td>", cantVal, System.Net.WebUtility.HtmlEncode(unidadStr)))
+                    sb.AppendLine(String.Format("              <td>{0}</td>", If(Not String.IsNullOrWhiteSpace(codProv), "<span class=""tag-code"">" & System.Net.WebUtility.HtmlEncode(codProv) & "</span>", "-")))
+                    sb.AppendLine(String.Format("              <td>{0}</td>", If(Not String.IsNullOrWhiteSpace(numParte), "<span class=""tag-code"">" & System.Net.WebUtility.HtmlEncode(numParte) & "</span>", "-")))
+
+                    sb.Append("              <td>")
+                    sb.Append(System.Net.WebUtility.HtmlEncode(descProv))
+                    If Not String.IsNullOrWhiteSpace(descAdic) AndAlso Not descAdic.Equals(descProv, StringComparison.OrdinalIgnoreCase) Then
+                        sb.Append(String.Format("<div class=""desc-adic"">{0}</div>", System.Net.WebUtility.HtmlEncode(descAdic)))
+                    End If
+                    sb.AppendLine("</td>")
+
+                    sb.AppendLine(String.Format("              <td style=""text-align: center; color: #64748b;"">{0}</td>", If(Not String.IsNullOrWhiteSpace(tiempoEnt), System.Net.WebUtility.HtmlEncode(tiempoEnt), "-")))
+                    sb.AppendLine("            </tr>")
+                Next
+
+                sb.AppendLine("          </tbody>")
+                sb.AppendLine("        </table>")
+                sb.AppendLine("      </div>")
+            Next
+
+            sb.AppendLine("    </div>")
+        Next
+
+        sb.AppendLine("  </div>")
+
+        ' Pie de página institucional
+        sb.AppendLine("  <div class=""footer"">")
+        sb.AppendLine("    <p style=""margin: 0 0 4px 0; font-weight: 600;"">HistoMedic LFM RPA Robot &bull; Notificación Automática de Cotizaciones</p>")
+        sb.AppendLine("    <p style=""margin: 0;"">Este mensaje fue generado automáticamente según la frecuencia programada en cat_consultorio. Por favor no responder a este correo.</p>")
+        sb.AppendLine("  </div>")
+        sb.AppendLine("</div>")
+        sb.AppendLine("</body>")
+        sb.AppendLine("</html>")
+
+        Return sb.ToString()
+    End Function
+
+    ''' <summary>
+    ''' Envía un correo electrónico en formato HTML a múltiples destinatarios usando Chilkat MailMan.
+    ''' No muestra cuadros de diálogo interactivos (MsgBox) y registra cualquier error en logs.
+    ''' </summary>
+    Private Function EnviarCorreoNotificacionHTML(ByVal destinatarios As String, ByVal asunto As String, ByVal cuerpoHtml As String) As Boolean
+        Try
+            Dim mailman As New Chilkat.MailMan()
+            Dim success As Boolean = mailman.UnlockComponent("MAIL87654321_3C7B9122j163")
+            If Not success Then
+                LogEventos.Escribir("Error al desbloquear Chilkat MailMan: " & mailman.LastErrorText)
+                Return False
+            End If
+
+            Dim dtSmtp As DataTable = tb_Recordset_MySQL_local("SELECT cpuerto, cdireccion, cclave, chost, cremitente, ccorreoremitente FROM cat_confserversmtp WHERE iActivo = 1 LIMIT 1")
+            If dtSmtp Is Nothing OrElse dtSmtp.Rows.Count = 0 Then
+                LogEventos.Escribir("Error: No se encontró servidor SMTP activo en cat_confserversmtp (iActivo = 1).")
+                Return False
+            End If
+
+            Dim rowSmtp As DataRow = dtSmtp.Rows(0)
+            Dim puertoSmtp As Integer = 25
+            If Not IsDBNull(rowSmtp("cpuerto")) AndAlso IsNumeric(rowSmtp("cpuerto")) Then
+                puertoSmtp = Convert.ToInt32(rowSmtp("cpuerto"))
+            End If
+
+            mailman.SmtpHost = rowSmtp("chost").ToString().Trim()
+            mailman.SmtpPort = puertoSmtp
+            mailman.SmtpUsername = rowSmtp("cdireccion").ToString().Trim()
+            mailman.SmtpPassword = rowSmtp("cclave").ToString().Trim()
+            mailman.SmtpSsl = False
+            mailman.ReadTimeout = 30
+            mailman.ConnectTimeout = 15
+
+            Dim email As New Chilkat.Email()
+            email.Subject = asunto
+            email.AddHtmlAlternativeBody(cuerpoHtml)
+
+            Dim remitenteNombre As String = If(Not IsDBNull(rowSmtp("cremitente")) AndAlso Not String.IsNullOrWhiteSpace(rowSmtp("cremitente").ToString()), rowSmtp("cremitente").ToString().Trim(), "LFM Control Robot")
+            Dim remitenteCorreo As String = rowSmtp("cdireccion").ToString().Trim()
+            email.FromName = remitenteNombre
+            email.FromAddress = remitenteCorreo
+
+            Dim separadores As Char() = New Char() {","c, ";"c}
+            Dim listaCorreos As String() = destinatarios.Split(separadores, StringSplitOptions.RemoveEmptyEntries)
+            Dim totalAgregados As Integer = 0
+
+            For Each correoRaw As String In listaCorreos
+                Dim correoLimpio As String = correoRaw.Trim()
+                If Not String.IsNullOrWhiteSpace(correoLimpio) AndAlso EsDireccionCorreoValida(correoLimpio) Then
+                    email.AddTo("", correoLimpio)
+                    totalAgregados += 1
+                End If
+            Next
+
+            If totalAgregados = 0 Then
+                LogEventos.Escribir("Error: No se encontraron destinatarios con formato de correo válido en: " & destinatarios)
+                Return False
+            End If
+
+            success = mailman.SendEmail(email)
+            If Not success Then
+                LogEventos.Escribir("Fallo de Chilkat al enviar correo: " & mailman.LastErrorText)
+                mailman.CloseSmtpConnection()
+                Return False
+            End If
+
+            mailman.CloseSmtpConnection()
+            Return True
+
+        Catch ex As Exception
+            LogEventos.Escribir("Excepción en EnviarCorreoNotificacionHTML: " & ex.Message)
+            Return False
+        End Try
+    End Function
+
+    ''' <summary>
+    ''' Valida sintácticamente una dirección de correo electrónico usando System.Net.Mail.MailAddress.
+    ''' </summary>
+    Private Function EsDireccionCorreoValida(ByVal emailStr As String) As Boolean
+        Try
+            If String.IsNullOrWhiteSpace(emailStr) Then Return False
+            Dim addr As New System.Net.Mail.MailAddress(emailStr)
+            Return True
+        Catch ex As Exception
+            Return False
+        End Try
+    End Function
 
 #End Region
 
