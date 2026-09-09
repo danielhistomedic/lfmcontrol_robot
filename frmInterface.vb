@@ -4555,6 +4555,14 @@ intenta_otravz:
             Return
         End If
 
+        ' 2. Regla Crítica: Cotización interna lista pero aún no se ha elaborado cotización al cliente (Estatus 4)
+        If item.EstatusId = 4 Then
+            item.Semaforo = "ROJO"
+            item.MotivoPrioridad = "Cotización interna lista, pendiente vendedor elabore cotización a cliente"
+            item.IndicadorRiesgo = "ALTO - Pendiente Cotizar a Cliente"
+            Return
+        End If
+
         ' 2. Regla Crítica: Inactividad severa (> 15 días sin movimiento)
         If item.DiasSinMovimiento > 15 Then
             item.Semaforo = "ROJO"
