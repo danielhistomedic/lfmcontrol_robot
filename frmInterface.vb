@@ -4102,9 +4102,16 @@ intenta_otravz:
         Public Property TotalCotizacionesCliente As Integer
         Public Property TotalPedidosCliente As Integer
         Public Property TotalSolicitudesProveedor As Integer
+        Public Property TotalSolicitudesProveedorEnviadas As Integer
         Public Property Activo As String = "ACTIVO"
         Public Property MotivoCancelacion As String = ""
         Public Property Seguimientos As New List(Of ItemSeguimientoProyecto)()
+
+        Public ReadOnly Property PendienteCotizacionInterna As Boolean
+            Get
+                Return EstatusId = 3 AndAlso TotalSolicitudesProveedorEnviadas > 0
+            End Get
+        End Property
 
         Public ReadOnly Property EsDeclinado As Boolean
             Get
@@ -4310,6 +4317,7 @@ intenta_otravz:
             "  (SELECT COUNT(*) FROM tb_ventas_cotizacion_cliente cc WHERE cc.venta_id = v.id AND cc.activo = 1) AS total_cotizaciones_cliente, " & _
             "  (SELECT COUNT(*) FROM tb_pedidos_cliente pc WHERE pc.venta_id = v.id) AS total_pedidos_cliente, " & _
             "  (SELECT COUNT(*) FROM tb_compras_cotizaciones com WHERE com.venta_id = v.id) AS total_solicitudes_proveedor, " & _
+            "  (SELECT COUNT(*) FROM tb_compras_cotizaciones com WHERE com.venta_id = v.id AND com.enviado = 1) AS total_solicitudes_proveedor_enviadas, " & _
             "  COALESCE(v.activo, 'ACTIVO') AS activo, " & _
             "  COALESCE(v.motivo_cancelacion, '') AS motivo_cancelacion " & _
             "FROM tb_ventas v " & _
@@ -4365,6 +4373,7 @@ intenta_otravz:
             item.TotalCotizacionesCliente = If(Not IsDBNull(r("total_cotizaciones_cliente")), Convert.ToInt32(r("total_cotizaciones_cliente")), 0)
             item.TotalPedidosCliente = If(Not IsDBNull(r("total_pedidos_cliente")), Convert.ToInt32(r("total_pedidos_cliente")), 0)
             item.TotalSolicitudesProveedor = If(Not IsDBNull(r("total_solicitudes_proveedor")), Convert.ToInt32(r("total_solicitudes_proveedor")), 0)
+            item.TotalSolicitudesProveedorEnviadas = If(Not IsDBNull(r("total_solicitudes_proveedor_enviadas")), Convert.ToInt32(r("total_solicitudes_proveedor_enviadas")), 0)
 
             ' Cálculo de Fecha de Último Movimiento
             Dim fechasMov As New List(Of DateTime)()
@@ -4437,8 +4446,13 @@ intenta_otravz:
                         item.ProximaAccion = "Proyecto cancelado / cerrado en bitácora"
                         item.Responsable = "Ventas (" & item.VendedorNombre & ")"
                     Case 3 ' COTIZACION DE PROVEEDOR
-                        item.ProximaAccion = "Dar seguimiento a respuesta de proveedores y registrar costos en el sistema"
-                        item.Responsable = "Compras / Ventas"
+                        If item.PendienteCotizacionInterna Then
+                            item.ProximaAccion = "Elaborar cotización interna (costos de proveedor disponibles)"
+                            item.Responsable = "Ventas (" & item.VendedorNombre & ")"
+                        Else
+                            item.ProximaAccion = "Dar seguimiento a respuesta de proveedores y registrar costos en el sistema"
+                            item.Responsable = "Compras / Ventas"
+                        End If
                     Case 4 ' COTIZACION INTERNA ELABORADA
                         item.ProximaAccion = "Generar y enviar formalmente la cotización de venta al cliente"
                         item.Responsable = "Ventas (" & item.VendedorNombre & ")"
@@ -4890,23 +4904,23 @@ intenta_otravz:
     Private Function GenerarPendientesProyectosHtml(ByVal proyectos As List(Of ItemProyectoInforme)) As String
         Dim sb As New System.Text.StringBuilder()
 
-        Dim pendOCCliente As Integer = proyectos.Where(Function(p) p.EstatusId = 5).Count()
-        Dim pendCotInterna As Integer = proyectos.Where(Function(p) p.EstatusId = 1 OrElse p.EstatusId = 3).Count()
-        Dim procesoCotProv As Integer = proyectos.Where(Function(p) p.EstatusId = 3 OrElse (p.TotalSolicitudesProveedor > 0 AndAlso p.EstatusId = 1)).Count()
-        Dim pendEnviarCotCli As Integer = proyectos.Where(Function(p) p.EstatusId = 4).Count()
-        Dim pendRespCliente As Integer = proyectos.Where(Function(p) p.EstatusId = 5 AndAlso p.TotalCotizacionesCliente > 0).Count()
-        Dim pendInfo As Integer = proyectos.Where(Function(p) p.EstatusId = 1 AndAlso p.TotalCotizacionesCliente = 0 AndAlso p.TotalSolicitudesProveedor = 0).Count()
-        Dim fchCompVencida As Integer = proyectos.Where(Function(p) p.FechaCompromiso.HasValue AndAlso p.DiasParaCompromiso.HasValue AndAlso p.DiasParaCompromiso.Value < 0).Count()
-        Dim sinMov4d As Integer = proyectos.Where(Function(p) p.DiasSinMovimiento >= 4).Count()
+        Dim pendOCCliente As Integer = proyectos.Where(Function(p) p.EstatusId = 5 AndAlso Not p.EsCanceladoODeclinado).Count()
+        Dim pendCotInterna As Integer = proyectos.Where(Function(p) p.PendienteCotizacionInterna AndAlso Not p.EsCanceladoODeclinado).Count()
+        Dim procesoCotProv As Integer = proyectos.Where(Function(p) ((p.EstatusId = 3 AndAlso Not p.PendienteCotizacionInterna) OrElse (p.TotalSolicitudesProveedor > 0 AndAlso p.TotalSolicitudesProveedorEnviadas = 0 AndAlso p.EstatusId = 1)) AndAlso Not p.EsCanceladoODeclinado).Count()
+        Dim pendEnviarCotCli As Integer = proyectos.Where(Function(p) p.EstatusId = 4 AndAlso Not p.EsCanceladoODeclinado).Count()
+        Dim pendRespCliente As Integer = proyectos.Where(Function(p) p.EstatusId = 5 AndAlso p.TotalCotizacionesCliente > 0 AndAlso Not p.EsCanceladoODeclinado).Count()
+        Dim pendInfo As Integer = proyectos.Where(Function(p) p.EstatusId = 1 AndAlso p.TotalCotizacionesCliente = 0 AndAlso p.TotalSolicitudesProveedor = 0 AndAlso Not p.EsCanceladoODeclinado).Count()
+        Dim fchCompVencida As Integer = proyectos.Where(Function(p) p.FechaCompromiso.HasValue AndAlso p.DiasParaCompromiso.HasValue AndAlso p.DiasParaCompromiso.Value < 0 AndAlso Not p.EsCanceladoODeclinado).Count()
+        Dim sinMov4d As Integer = proyectos.Where(Function(p) p.DiasSinMovimiento >= 4 AndAlso Not p.EsCanceladoODeclinado).Count()
 
         sb.AppendLine("    <div class=""sec-heading"">&#9888;&#65039; 2. Balance y Conteo de Pendientes</div>")
         sb.AppendLine("    <table class=""data-table"">")
-        sb.AppendLine("      <thead>")
+        sb.AppendLine("      </thead>")
         sb.AppendLine("        <tr><th>Categoría de Pendiente Detectado</th><th style=""text-align: center;"">Proyectos</th><th>Impacto Operativo / Comercial</th><th style=""text-align: center;"">Acción Requerida</th></tr>")
         sb.AppendLine("      </thead>")
         sb.AppendLine("      <tbody>")
         sb.AppendLine(String.Format("        <tr><td><strong>Pendientes de Orden de Compra del Cliente</strong></td><td style=""text-align: center; font-weight: bold; color: #b45309;"">{0}</td><td>Cotizaciones en poder del cliente sin decisión formal de compra</td><td style=""text-align: center;"">Cierre comercial</td></tr>", pendOCCliente))
-        sb.AppendLine(String.Format("        <tr><td><strong>Pendientes de Elaborar Cotización Interna</strong></td><td style=""text-align: center; font-weight: bold; color: #b45309;"">{0}</td><td>Oportunidades abiertas esperando cálculo de costos y márgenes</td><td style=""text-align: center;"">Ingeniería de costos</td></tr>", pendCotInterna))
+        sb.AppendLine(String.Format("        <tr><td><strong>Pendientes de Elaborar Cotización Interna</strong></td><td style=""text-align: center; font-weight: bold; color: #b45309;"">{0}</td><td>Proyectos cotizados que no se ha enviado cotización interna</td><td style=""text-align: center;"">Ingeniería de costos</td></tr>", pendCotInterna))
         sb.AppendLine(String.Format("        <tr><td><strong>En Proceso de Cotización de Proveedor</strong></td><td style=""text-align: center; font-weight: bold;"">{0}</td><td>Solicitudes enviadas a fabricantes en espera de precio y tiempo entrega</td><td style=""text-align: center;"">Seguimiento compras</td></tr>", procesoCotProv))
         sb.AppendLine(String.Format("        <tr><td><strong>Pendientes de Enviar Cotización al Cliente</strong></td><td style=""text-align: center; font-weight: bold; color: #b91c1c;"">{0}</td><td>Cotización interna lista, pendiente de emisión formal al cliente</td><td style=""text-align: center;"">Envío inmediato</td></tr>", pendEnviarCotCli))
         sb.AppendLine(String.Format("        <tr><td><strong>Pendientes de Respuesta / Confirmación del Cliente</strong></td><td style=""text-align: center; font-weight: bold;"">{0}</td><td>Propuesta técnica-económica entregada al cliente</td><td style=""text-align: center;"">Llamada de seguimiento</td></tr>", pendRespCliente))
