@@ -5152,20 +5152,28 @@ intenta_otravz:
     Private Function GenerarPrioridadesAtencionHtml(ByVal proyectos As List(Of ItemProyectoInforme)) As String
         Dim sb As New System.Text.StringBuilder()
 
-        ' Ordenamiento por prioridad (solo proyectos con orden de compra de cliente pendiente: EstatusId = 5):
+        ' Filtrar solo aquellos proyectos de mayor impacto económico (>2500 USD o >= 50,000 MXN)
+        ' y que requieran "Seguimiento comercial con cliente para cierre de venta y recepción de OC":
         ' 1. Semáforo ROJO primero, luego AMARILLO, luego VERDE
         ' 2. Compromiso vencido o próximo
         ' 3. Días sin movimiento descendente
         ' 4. Monto económico descendente
-        Dim prioritarios = proyectos.Where(Function(p) p.EstatusId = 5 AndAlso Not p.EsCanceladoODeclinado) _
+        Dim prioritarios = proyectos.Where(Function(p) Not p.EsCanceladoODeclinado AndAlso _
+                                            (p.EstatusId = 5 OrElse (p.ProximaAccion IsNot Nothing AndAlso p.ProximaAccion.IndexOf("cierre de venta y recepción de OC", StringComparison.OrdinalIgnoreCase) >= 0)) AndAlso _
+                                            ((p.MonedaSiglas.Equals("USD", StringComparison.OrdinalIgnoreCase) AndAlso p.TotalMonto > 2500.0) OrElse _
+                                             (p.MonedaSiglas.Equals("MXN", StringComparison.OrdinalIgnoreCase) AndAlso p.TotalMonto >= 50000.0))) _
                                     .OrderBy(Function(p) If(p.Semaforo = "ROJO", 0, If(p.Semaforo = "AMARILLO", 1, 2))) _
                                     .ThenBy(Function(p) If(p.DiasParaCompromiso.HasValue, p.DiasParaCompromiso.Value, 9999)) _
                                     .ThenByDescending(Function(p) p.DiasSinMovimiento) _
                                     .ThenByDescending(Function(p) p.TotalMonto) _
                                     .ToList()
 
-        sb.AppendLine("    <div class=""sec-heading"">&#127919; 5. Prioridades de Atención Inmediata</div>")
-        sb.AppendLine("    <p style=""font-size: 12px; color: #64748b; margin: -6px 0 14px 0;"">Listado clasificado de proyectos activos que demandan acción ejecutiva inmediata y seguimiento prioritario.</p>")
+        sb.AppendLine("    <div class=""sec-heading"">&#127919; 5. Prioridades de atención inmediata (proyectos de alto impacto >2500 USD o >= 50,000 mxn) pendientes de OC Cliente</div>")
+        sb.AppendLine("    <p style=""font-size: 12px; color: #64748b; margin: -6px 0 14px 0;"">Listado de proyectos de mayor impacto económico (> $2,500 USD o &gt;= $50,000 MXN) que demandan seguimiento comercial con cliente para cierre de venta y recepción de Orden de Compra.</p>")
+
+        If prioritarios.Count = 0 Then
+            sb.AppendLine("    <div style=""font-size: 12px; color: #166534; background-color: #dcfce7; border: 1px solid #86efac; padding: 12px; border-radius: 6px; margin-bottom: 15px;"">&#10004; No se registran proyectos con monto &gt; $2,500 USD o &gt;= $50,000 MXN pendientes de Orden de Compra de Cliente.</div>")
+        End If
 
         For Each p In prioritarios
             Dim badgeClass As String = If(p.Semaforo = "ROJO", "badge-r", If(p.Semaforo = "AMARILLO", "badge-a", "badge-v"))
