@@ -4330,7 +4330,7 @@ intenta_otravz:
             "LEFT JOIN cat_tipos_cambio tc ON v.moneda_id = tc.id " & _
             "WHERE v.estatus_proyecto_id <= 7 " & _
             "  AND v.fecha >= '2026-08-24' " & _
-            "ORDER BY cp.clasificacion, vendedor_nombre, v.id DESC;"
+            "ORDER BY cliente_nombre, vendedor_nombre, cp.clasificacion, v.id DESC;"
 
         Dim dtProyectos As DataTable = tb_Recordset_MySQL_local(sqlQuery)
         If dtProyectos Is Nothing Then Return resultado
@@ -5251,91 +5251,90 @@ intenta_otravz:
     End Function
 
     ''' <summary>
-    ''' Sección 1 y 9: Detalle Estructurado de Proyectos agrupados por Clasificación -> Vendedor -> Fila de Proyecto.
+    ''' Sección 7: Detalle Estructurado de Proyectos agrupados por Cliente y ordenados por Vendedor y Clasificación.
     ''' </summary>
     Private Function GenerarDetalleProyectosHtml(ByVal proyectos As List(Of ItemProyectoInforme)) As String
         Dim sb As New System.Text.StringBuilder()
 
-        sb.AppendLine("    <div class=""sec-heading"">&#128221; 7. Detalle Estructurado por Clasificación y Vendedor</div>")
+        sb.AppendLine("    <div class=""sec-heading"">&#128221; 7. Detalle Estructurado por Cliente</div>")
 
         Dim proyectosParaDetalle = proyectos.Where(Function(p) Not p.EsCanceladoODeclinado).ToList()
-        Dim clasificaciones = proyectosParaDetalle.GroupBy(Function(p) p.ClasificacionNombre).OrderBy(Function(g) g.Key)
+        Dim clientes = proyectosParaDetalle.GroupBy(Function(p) p.ClienteNombre).OrderBy(Function(g) g.Key)
 
-        For Each grpClasif In clasificaciones
-            Dim totalPryClasif As Integer = grpClasif.Count
-            Dim mtoUSDClasif As Double = grpClasif.Where(Function(p) p.MonedaSiglas.Equals("USD", StringComparison.OrdinalIgnoreCase)).Sum(Function(p) p.TotalMonto)
-            Dim mtoMXNClasif As Double = grpClasif.Where(Function(p) Not p.MonedaSiglas.Equals("USD", StringComparison.OrdinalIgnoreCase)).Sum(Function(p) p.TotalMonto)
+        For Each grpCli In clientes
+            Dim totalPryCli As Integer = grpCli.Count
+            Dim mtoUSDCli As Double = grpCli.Where(Function(p) p.MonedaSiglas.Equals("USD", StringComparison.OrdinalIgnoreCase)).Sum(Function(p) p.TotalMonto)
+            Dim mtoMXNCli As Double = grpCli.Where(Function(p) Not p.MonedaSiglas.Equals("USD", StringComparison.OrdinalIgnoreCase)).Sum(Function(p) p.TotalMonto)
 
             sb.AppendLine("    <div class=""clasif-block"" style=""margin-bottom: 26px; border: 1px solid #cbd5e1; border-radius: 6px; overflow: hidden;"">")
-            sb.AppendLine(String.Format("      <div class=""clasif-bar"" style=""background-color: #1e3a8a; color: #ffffff !important; padding: 10px 16px; font-weight: 700; font-size: 14px; text-transform: uppercase; letter-spacing: 0.5px;"">&#9658; Clasificación: {0} ({1} proyectos &bull; ${2:N0} USD &bull; ${3:N0} MXN)</div>",
-                                        System.Net.WebUtility.HtmlEncode(grpClasif.Key), totalPryClasif, mtoUSDClasif, mtoMXNClasif))
+            sb.AppendLine(String.Format("      <div class=""clasif-bar"" style=""background-color: #1e3a8a; color: #ffffff !important; padding: 10px 16px; font-weight: 700; font-size: 14px; text-transform: uppercase; letter-spacing: 0.5px;"">&#9658; Cliente: {0} ({1} proyecto(s) &bull; ${2:N0} USD &bull; ${3:N0} MXN)</div>",
+                                        System.Net.WebUtility.HtmlEncode(grpCli.Key), totalPryCli, mtoUSDCli, mtoMXNCli))
 
-            ' Subagrupar por Vendedor
-            Dim vendedores = grpClasif.GroupBy(Function(p) p.VendedorNombre).OrderBy(Function(g) g.Key)
+            sb.AppendLine("      <table class=""data-table"" style=""margin-bottom: 0;"">")
+            sb.AppendLine("        <thead>")
+            sb.AppendLine("          <tr>")
+            sb.AppendLine("            <th style=""width: 9%;"">Folio</th>")
+            sb.AppendLine("            <th style=""width: 14%;"">Vendedor</th>")
+            sb.AppendLine("            <th style=""width: 12%;"">Clasificación</th>")
+            sb.AppendLine("            <th style=""width: 17%;"">Descripción</th>")
+            sb.AppendLine("            <th style=""width: 11%;"">Estatus</th>")
+            sb.AppendLine("            <th style=""width: 7%; text-align: center;"">Últ. Mov.</th>")
+            sb.AppendLine("            <th style=""width: 4%; text-align: center;"">Inact.</th>")
+            sb.AppendLine("            <th style=""width: 9%; text-align: right;"">Monto</th>")
+            sb.AppendLine("            <th style=""width: 11%;"">Próxima Acción / Resp.</th>")
+            sb.AppendLine("            <th style=""width: 3%; text-align: center;"">Compromiso</th>")
+            sb.AppendLine("            <th style=""width: 3%; text-align: center;"">Semáforo</th>")
+            sb.AppendLine("          </tr>")
+            sb.AppendLine("        </thead>")
+            sb.AppendLine("        <tbody>")
 
-            For Each grpVend In vendedores
-                sb.AppendLine(String.Format("      <div class=""vendedor-bar"" style=""background-color: #e2e8f0; color: #0f172a !important; padding: 7px 16px; font-weight: 700; font-size: 12px; border-top: 1px solid #cbd5e1; border-bottom: 1px solid #cbd5e1;"">&#128100; Vendedor: {0} ({1} proyectos)</div>",
-                                            System.Net.WebUtility.HtmlEncode(grpVend.Key), grpVend.Count))
+            ' Ordenar proyectos dentro del cliente: primero por Vendedor, luego por Clasificación, luego por Folio
+            Dim proyectosOrdenados = grpCli.OrderBy(Function(p) p.VendedorNombre) _
+                                           .ThenBy(Function(p) p.ClasificacionNombre) _
+                                           .ThenBy(Function(p) p.ProyectoId) _
+                                           .ToList()
 
-                sb.AppendLine("      <table class=""data-table"" style=""margin-bottom: 0;"">")
-                sb.AppendLine("        <thead>")
+            For Each p In proyectosOrdenados
+                Dim badgeCls As String = If(p.Semaforo = "ROJO", "badge-r", If(p.Semaforo = "AMARILLO", "badge-a", "badge-v"))
+                Dim badgeStyle As String = If(p.Semaforo = "ROJO",
+                    "display: inline-block; background-color: #fee2e2; color: #b91c1c !important; border: 1px solid #fca5a5; padding: 2px 7px; border-radius: 10px; font-weight: 700; font-size: 11px;",
+                    If(p.Semaforo = "AMARILLO",
+                        "display: inline-block; background-color: #fef9c3; color: #a16207 !important; border: 1px solid #fde047; padding: 2px 7px; border-radius: 10px; font-weight: 700; font-size: 11px;",
+                        "display: inline-block; background-color: #dcfce7; color: #15803d !important; border: 1px solid #86efac; padding: 2px 7px; border-radius: 10px; font-weight: 700; font-size: 11px;"))
+                Dim fchCompStr As String = "-"
+                If p.FechaCompromiso.HasValue Then
+                    fchCompStr = String.Format("<span title=""{0}"">{1:dd/MM/yy}</span>", p.TipoFechaCompromiso, p.FechaCompromiso.Value)
+                    If p.DiasParaCompromiso.HasValue AndAlso p.DiasParaCompromiso.Value < 0 Then
+                        fchCompStr &= String.Format("<br/><span style=""color: #b91c1c; font-size: 10px; font-weight: bold;"">({0}d)</span>", p.DiasParaCompromiso.Value)
+                    End If
+                End If
+
+                Dim descStr As String = System.Net.WebUtility.HtmlEncode(p.Titulo)
+                If Not String.IsNullOrWhiteSpace(p.ClienteFinal) AndAlso Not p.ClienteFinal.Equals(p.ClienteNombre, StringComparison.OrdinalIgnoreCase) Then
+                    descStr &= String.Format("<br/><span style=""font-size: 10px; color: #64748b;"">Final: {0}</span>", System.Net.WebUtility.HtmlEncode(p.ClienteFinal))
+                End If
+
                 sb.AppendLine("          <tr>")
-                sb.AppendLine("            <th style=""width: 9%;"">Folio</th>")
-                sb.AppendLine("            <th style=""width: 15%;"">Cliente</th>")
-                sb.AppendLine("            <th style=""width: 20%;"">Descripción</th>")
-                sb.AppendLine("            <th style=""width: 11%;"">Estatus</th>")
-                sb.AppendLine("            <th style=""width: 8%; text-align: center;"">Últ. Mov.</th>")
-                sb.AppendLine("            <th style=""width: 5%; text-align: center;"">Inact.</th>")
-                sb.AppendLine("            <th style=""width: 9%; text-align: right;"">Monto</th>")
-                sb.AppendLine("            <th style=""width: 13%;"">Próxima Acción / Resp.</th>")
-                sb.AppendLine("            <th style=""width: 5%; text-align: center;"">Compromiso</th>")
-                sb.AppendLine("            <th style=""width: 5%; text-align: center;"">Semáforo</th>")
+                sb.AppendLine(String.Format("            <td><strong style=""font-family: Consolas, monospace; color: #0f172a;"">{0}</strong></td>", p.ProyectoId))
+                sb.AppendLine(String.Format("            <td style=""font-weight: 600; font-size: 11px;"">{0}</td>", System.Net.WebUtility.HtmlEncode(p.VendedorNombre)))
+                sb.AppendLine(String.Format("            <td><span style=""font-size: 11px; color: #1e3a8a; font-weight: 600;"">{0}</span></td>", System.Net.WebUtility.HtmlEncode(p.ClasificacionNombre)))
+                sb.AppendLine(String.Format("            <td style=""font-size: 11px;"">{0}</td>", descStr))
+                sb.AppendLine(String.Format("            <td><span style=""font-size: 10px; background: #e2e8f0; padding: 2px 4px; border-radius: 3px;"">{0}</span></td>", System.Net.WebUtility.HtmlEncode(p.EstatusNombre)))
+                sb.AppendLine(String.Format("            <td style=""text-align: center; font-size: 11px;"">{0:dd/MM/yy}</td>", p.FechaUltimoMovimiento))
+                sb.AppendLine(String.Format("            <td style=""text-align: center; font-weight: {0}; color: {1};"">{2}d</td>",
+                                            If(p.DiasSinMovimiento >= 4, "bold", "normal"),
+                                            If(p.DiasSinMovimiento > 15, "#b91c1c", If(p.DiasSinMovimiento >= 4, "#d97706", "#16a34a")),
+                                            p.DiasSinMovimiento))
+                sb.AppendLine(String.Format("            <td style=""text-align: right; font-weight: bold;"">{0:C2} <span style=""font-size: 10px; color: #64748b;"">{1}</span></td>", p.TotalMonto, p.MonedaSiglas))
+                sb.AppendLine(String.Format("            <td style=""font-size: 10px; line-height: 1.3;"">{0}<br/><strong style=""color: #1e3a8a;"">{1}</strong></td>",
+                                            System.Net.WebUtility.HtmlEncode(p.ProximaAccion), System.Net.WebUtility.HtmlEncode(p.Responsable)))
+                sb.AppendLine(String.Format("            <td style=""text-align: center; font-size: 10px;"">{0}</td>", fchCompStr))
+                sb.AppendLine(String.Format("            <td style=""text-align: center;""><span class=""{0}"" style=""{1}"">{2}</span></td>", badgeCls, badgeStyle, p.Semaforo))
                 sb.AppendLine("          </tr>")
-                sb.AppendLine("        </thead>")
-                sb.AppendLine("        <tbody>")
-
-                For Each p In grpVend
-                    Dim badgeCls As String = If(p.Semaforo = "ROJO", "badge-r", If(p.Semaforo = "AMARILLO", "badge-a", "badge-v"))
-                    Dim badgeStyle As String = If(p.Semaforo = "ROJO",
-                        "display: inline-block; background-color: #fee2e2; color: #b91c1c !important; border: 1px solid #fca5a5; padding: 2px 7px; border-radius: 10px; font-weight: 700; font-size: 11px;",
-                        If(p.Semaforo = "AMARILLO",
-                            "display: inline-block; background-color: #fef9c3; color: #a16207 !important; border: 1px solid #fde047; padding: 2px 7px; border-radius: 10px; font-weight: 700; font-size: 11px;",
-                            "display: inline-block; background-color: #dcfce7; color: #15803d !important; border: 1px solid #86efac; padding: 2px 7px; border-radius: 10px; font-weight: 700; font-size: 11px;"))
-                    Dim fchCompStr As String = "-"
-                    If p.FechaCompromiso.HasValue Then
-                        fchCompStr = String.Format("<span title=""{0}"">{1:dd/MM/yy}</span>", p.TipoFechaCompromiso, p.FechaCompromiso.Value)
-                        If p.DiasParaCompromiso.HasValue AndAlso p.DiasParaCompromiso.Value < 0 Then
-                            fchCompStr &= String.Format("<br/><span style=""color: #b91c1c; font-size: 10px; font-weight: bold;"">({0}d)</span>", p.DiasParaCompromiso.Value)
-                        End If
-                    End If
-
-                    Dim clienteStr As String = System.Net.WebUtility.HtmlEncode(p.ClienteNombre)
-                    If Not String.IsNullOrWhiteSpace(p.ClienteFinal) AndAlso Not p.ClienteFinal.Equals(p.ClienteNombre, StringComparison.OrdinalIgnoreCase) Then
-                        clienteStr &= String.Format("<br/><span style=""font-size: 10px; color: #64748b;"">Final: {0}</span>", System.Net.WebUtility.HtmlEncode(p.ClienteFinal))
-                    End If
-
-                    sb.AppendLine("          <tr>")
-                    sb.AppendLine(String.Format("            <td><strong style=""font-family: Consolas, monospace; color: #0f172a;"">{0}</strong></td>", p.ProyectoId))
-                    sb.AppendLine(String.Format("            <td>{0}</td>", clienteStr))
-                    sb.AppendLine(String.Format("            <td style=""font-size: 11px;"">{0}</td>", System.Net.WebUtility.HtmlEncode(p.Titulo)))
-                    sb.AppendLine(String.Format("            <td><span style=""font-size: 10px; background: #e2e8f0; padding: 2px 4px; border-radius: 3px;"">{0}</span></td>", System.Net.WebUtility.HtmlEncode(p.EstatusNombre)))
-                    sb.AppendLine(String.Format("            <td style=""text-align: center; font-size: 11px;"">{0:dd/MM/yy}</td>", p.FechaUltimoMovimiento))
-                    sb.AppendLine(String.Format("            <td style=""text-align: center; font-weight: {0}; color: {1};"">{2}d</td>",
-                                                If(p.DiasSinMovimiento >= 4, "bold", "normal"),
-                                                If(p.DiasSinMovimiento > 15, "#b91c1c", If(p.DiasSinMovimiento >= 4, "#d97706", "#16a34a")),
-                                                p.DiasSinMovimiento))
-                    sb.AppendLine(String.Format("            <td style=""text-align: right; font-weight: bold;"">{0:C2} <span style=""font-size: 10px; color: #64748b;"">{1}</span></td>", p.TotalMonto, p.MonedaSiglas))
-                    sb.AppendLine(String.Format("            <td style=""font-size: 10px; line-height: 1.3;"">{0}<br/><strong style=""color: #1e3a8a;"">{1}</strong></td>",
-                                                System.Net.WebUtility.HtmlEncode(p.ProximaAccion), System.Net.WebUtility.HtmlEncode(p.Responsable)))
-                    sb.AppendLine(String.Format("            <td style=""text-align: center; font-size: 10px;"">{0}</td>", fchCompStr))
-                    sb.AppendLine(String.Format("            <td style=""text-align: center;""><span class=""{0}"" style=""{1}"">{2}</span></td>", badgeCls, badgeStyle, p.Semaforo))
-                    sb.AppendLine("          </tr>")
-                Next
-
-                sb.AppendLine("        </tbody>")
-                sb.AppendLine("      </table>")
             Next
 
+            sb.AppendLine("        </tbody>")
+            sb.AppendLine("      </table>")
             sb.AppendLine("    </div>")
         Next
 
