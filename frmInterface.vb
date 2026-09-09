@@ -4547,6 +4547,35 @@ intenta_otravz:
             Return
         End If
 
+        ' Regla Especial: Estatus 5 - COTIZACION CLIENTE ELABORADA (PEDIDO COTIZADO)
+        ' El semáforo es exclusivamente VERDE o ROJO según la fecha compromiso:
+        ' - VERDE si la fecha actual es antes de la fecha compromiso.
+        ' - ROJO si la fecha actual es igual o mayor a la fecha compromiso.
+        If item.EstatusId = 5 Then
+            If item.FechaCompromiso.HasValue Then
+                If DateTime.Now.Date < item.FechaCompromiso.Value.Date Then
+                    item.Semaforo = "VERDE"
+                    item.MotivoPrioridad = String.Format("Cotización a cliente en tiempo (Compromiso/Vigencia: {0:dd/MM/yy})", item.FechaCompromiso.Value)
+                    item.IndicadorRiesgo = "NORMAL - En Plazo"
+                Else
+                    item.Semaforo = "ROJO"
+                    If DateTime.Now.Date = item.FechaCompromiso.Value.Date Then
+                        item.MotivoPrioridad = String.Format("Fecha compromiso/vigencia ({0}) vence HOY", item.TipoFechaCompromiso)
+                        item.IndicadorRiesgo = "CRÍTICO - Compromiso Vence Hoy"
+                    Else
+                        Dim diasVencidos As Integer = CInt(Math.Floor((DateTime.Now.Date - item.FechaCompromiso.Value.Date).TotalDays))
+                        item.MotivoPrioridad = String.Format("Fecha compromiso/vigencia ({0}) vencida hace {1} día(s)", item.TipoFechaCompromiso, diasVencidos)
+                        item.IndicadorRiesgo = "CRÍTICO - Compromiso Vencido"
+                    End If
+                End If
+            Else
+                item.Semaforo = "VERDE"
+                item.MotivoPrioridad = "Cotización elaborada al cliente en tiempo"
+                item.IndicadorRiesgo = "NORMAL"
+            End If
+            Return
+        End If
+
         ' Regla Especial: Estatus 7 - ORDEN COMPRA PROVEEDOR (PEDIDO ELABORADO)
         ' El semáforo es exclusivamente VERDE o ROJO según la fecha compromiso:
         ' - VERDE si la fecha actual es antes de la fecha compromiso.
