@@ -44,6 +44,12 @@ Public Class frmInterface
     Private _ultimoChequeoNotificaciones As DateTime = DateTime.MinValue
     Private _procesandoNotificaciones As Boolean = False
 
+    ' =========================================================================
+    ' Control de Notificación de Informe Ejecutivo de Seguimiento de Proyectos
+    ' =========================================================================
+    Private _procesandoInformeProyectos As Boolean = False
+    Private _fechaUltimoEnvioInformeProyectos As Nullable(Of DateTime) = Nothing
+
 #Region "Propiedades"
 
     Protected str_FTP_USUARIO As String
@@ -450,13 +456,18 @@ Public Class frmInterface
             End If
 
             ' ======================================
-            ' Notificaciones Automáticas a Compras (FLOWserve y DIVERSOS)
+            ' Notificaciones Automáticas a Compras (FLOWserve y DIVERSOS) e Informe Ejecutivo
             ' ======================================
             Try
                 If Not _procesandoNotificaciones AndAlso (DateTime.Now.Subtract(_ultimoChequeoNotificaciones).TotalMinutes >= 1) Then
                     _ultimoChequeoNotificaciones = DateTime.Now
                     Me.NotificarCotizacionesPendientesFlowserve()
                     Me.NotificarCotizacionesPendientesDiversos()
+                End If
+
+                ' Notificación Diaria del Informe Ejecutivo de Seguimiento de Proyectos
+                If Not _procesandoInformeProyectos Then
+                    Me.NotificarInformeEjecutivoProyectos()
                 End If
             Catch exNotif As Exception
                 LogEventos.Escribir("Error en ciclo de notificaciones automáticas: " & exNotif.Message)
@@ -4055,6 +4066,1099 @@ intenta_otravz:
             Return False
         End Try
     End Function
+
+#Region "Informe Ejecutivo de Seguimiento de Proyectos"
+
+    ''' <summary>
+    ''' Modelo de datos para representar cada proyecto en el Informe Ejecutivo.
+    ''' </summary>
+    Public Class ItemProyectoInforme
+        Public Property VentaId As Integer
+        Public Property ProyectoId As String
+        Public Property Titulo As String
+        Public Property ClasificacionId As Integer
+        Public Property ClasificacionNombre As String
+        Public Property VendedorClave As String
+        Public Property VendedorNombre As String
+        Public Property ClienteNombre As String
+        Public Property ClienteFinal As String
+        Public Property EstatusId As Integer
+        Public Property EstatusNombre As String
+        Public Property FechaCreacion As DateTime
+        Public Property FechaProyecto As Nullable(Of DateTime)
+        Public Property MonedaId As Integer
+        Public Property MonedaSiglas As String
+        Public Property TotalMonto As Double
+        Public Property FechaUltimoMovimiento As DateTime
+        Public Property DiasSinMovimiento As Integer
+        Public Property FechaCompromiso As Nullable(Of DateTime)
+        Public Property TipoFechaCompromiso As String
+        Public Property DiasParaCompromiso As Nullable(Of Integer)
+        Public Property ProximaAccion As String
+        Public Property Responsable As String
+        Public Property IndicadorRiesgo As String
+        Public Property MotivoPrioridad As String
+        Public Property Semaforo As String ' VERDE, AMARILLO, ROJO
+        Public Property TotalCotizacionesCliente As Integer
+        Public Property TotalPedidosCliente As Integer
+        Public Property TotalSolicitudesProveedor As Integer
+    End Class
+
+    ''' <summary>
+    ''' Rutina principal para generar y notificar diariamente al personal directivo y jefes de área
+    ''' el Informe Ejecutivo de Seguimiento de Proyectos (a partir del 24/08/2026, etapas 1 a 7).
+    ''' </summary>
+    Public Sub NotificarInformeEjecutivoProyectos(Optional ByVal forzarEnvio As Boolean = False)
+        If _procesandoInformeProyectos Then Return
+
+        ' 1. Validar horario de envío diario (a partir de las 08:00 AM) salvo si es forzado manualmente
+        If Not forzarEnvio Then
+            Dim horaProgramada As New TimeSpan(8, 0, 0)
+            If DateTime.Now.TimeOfDay < horaProgramada Then
+                Return
+            End If
+
+            ' Validar que no se haya enviado ya el día de hoy
+            If _fechaUltimoEnvioInformeProyectos.HasValue AndAlso _fechaUltimoEnvioInformeProyectos.Value.Date = DateTime.Now.Date Then
+                Return
+            End If
+        End If
+
+        _procesandoInformeProyectos = True
+        Try
+            If cx_MySQL_local.State <> ConnectionState.Open Then
+                Try
+                    If cx_MySQL_local.State = ConnectionState.Broken Then cx_MySQL_local.Close()
+                    cx_MySQL_local.Open()
+                Catch exConn As Exception
+                    AgregarLog(500, "[Informe Ejecutivo Proyectos] Error al conectar a la BD local: " & exConn.Message)
+                    Return
+                End Try
+            End If
+
+            ' 2. Asegurar que la tabla histórica exista para almacenar snapshots y comparativos
+            AsegurarTablaHistoricaProyectos()
+
+            ' Validar en BD si hoy ya se registró el snapshot (evita envíos duplicados ante reinicios del robot)
+            If Not forzarEnvio Then
+                Dim sqlCheckHoy As String = "SELECT COUNT(*) FROM tb_informe_proyectos_historico WHERE fecha = CURDATE()"
+                Dim dtCheck As DataTable = tb_Recordset_MySQL_local(sqlCheckHoy)
+                If dtCheck IsNot Nothing AndAlso dtCheck.Rows.Count > 0 AndAlso Convert.ToInt32(dtCheck.Rows(0)(0)) > 0 Then
+                    _fechaUltimoEnvioInformeProyectos = DateTime.Now
+                    Return
+                End If
+            End If
+
+            ' 3. Obtener correos destinatarios del campo correos_copia_proyecto_venta en cat_consultorio
+            Dim sqlConsultorio As String = "SELECT correos_copia_proyecto_venta FROM cat_consultorio LIMIT 1"
+            Dim dtConsultorio As DataTable = tb_Recordset_MySQL_local(sqlConsultorio)
+            If dtConsultorio Is Nothing OrElse dtConsultorio.Rows.Count = 0 OrElse IsDBNull(dtConsultorio.Rows(0)("correos_copia_proyecto_venta")) Then
+                AgregarLog(500, "[Informe Ejecutivo Proyectos] No se encontró configuración en cat_consultorio.correos_copia_proyecto_venta.")
+                Return
+            End If
+
+            Dim destinatarios As String = dtConsultorio.Rows(0)("correos_copia_proyecto_venta").ToString().Trim()
+            If String.IsNullOrWhiteSpace(destinatarios) Then
+                AgregarLog(500, "[Informe Ejecutivo Proyectos] Omitido: cat_consultorio.correos_copia_proyecto_venta está vacío.")
+                Return
+            End If
+
+            ' 4. Consultar y evaluar proyectos generados a partir del 24 de agosto de 2026 hasta etapa 7
+            Dim listaProyectos As List(Of ItemProyectoInforme) = ConsultarProyectosSeguimiento()
+            If listaProyectos.Count = 0 Then
+                LogEventos.Escribir("[Informe Ejecutivo Proyectos] No se encontraron proyectos que cumplan con los filtros.")
+                Return
+            End If
+
+            AgregarLog(100, String.Format("[Informe Ejecutivo Proyectos] Procesando {0} proyectos (a partir del 24/08/2026). Generando informe HTML...", listaProyectos.Count))
+
+            ' 5. Obtener snapshots históricos previos (ayer y hace 7 días) para el comparativo
+            Dim dtSnapAyer As DataTable = ObtenerSnapshotHistorico(1)
+            Dim dtSnap7Dias As DataTable = ObtenerSnapshotHistorico(7)
+
+            ' 6. Generar el cuerpo HTML completo del informe ejecutivo
+            Dim htmlCuerpo As String = GenerarHtmlInformeEjecutivoProyectos(listaProyectos, dtSnapAyer, dtSnap7Dias)
+            Dim asunto As String = String.Format("[LFMControl] Informe Ejecutivo de Seguimiento de Proyectos - {0} ({1} Proyectos)",
+                                                 DateTime.Now.ToString("dd/MM/yyyy"), listaProyectos.Count)
+
+            ' Guardar respaldo local del HTML generado para consulta y auditoría
+            Try
+                Dim rutaHtmlLocal As String = System.IO.Path.Combine(Application.StartupPath, "UltimoInformeEjecutivoProyectos.html")
+                System.IO.File.WriteAllText(rutaHtmlLocal, htmlCuerpo, System.Text.Encoding.UTF8)
+            Catch exFile As Exception
+            End Try
+
+            ' 7. Enviar correo a través de Chilkat MailMan
+            Dim enviadoExitoso As Boolean = EnviarCorreoNotificacionHTML(destinatarios, asunto, htmlCuerpo)
+
+            If enviadoExitoso Then
+                _fechaUltimoEnvioInformeProyectos = DateTime.Now
+
+                ' 8. Guardar snapshot del día en tb_informe_proyectos_historico
+                GuardarSnapshotHistoricoProyectos(listaProyectos)
+
+                AgregarLog(200, String.Format("[Informe Ejecutivo Proyectos] Notificación diaria enviada con éxito a: {0} ({1} proyectos reportados).", destinatarios, listaProyectos.Count))
+                LogEventos.Escribir(String.Format("[Informe Ejecutivo Proyectos] Notificación enviada exitosamente a: {0}", destinatarios))
+            Else
+                AgregarLog(500, String.Format("[Informe Ejecutivo Proyectos] Error al enviar correo a: {0}. Se reintentará en el próximo ciclo.", destinatarios))
+            End If
+
+        Catch ex As Exception
+            AgregarLog(500, "Error en NotificarInformeEjecutivoProyectos: " & ex.Message)
+            LogEventos.Escribir("Error en NotificarInformeEjecutivoProyectos: " & ex.Message & " - Stack: " & ex.StackTrace)
+        Finally
+            _procesandoInformeProyectos = False
+        End Try
+    End Sub
+
+    ''' <summary>
+    ''' Asegura la creación de la tabla histórica de proyectos si aún no existe.
+    ''' </summary>
+    Private Sub AsegurarTablaHistoricaProyectos()
+        Try
+            Dim sqlCreate As String =
+                "CREATE TABLE IF NOT EXISTS tb_informe_proyectos_historico (" & _
+                "  id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, " & _
+                "  fecha DATE NOT NULL, " & _
+                "  venta_id INT UNSIGNED NOT NULL, " & _
+                "  proyecto_id VARCHAR(45) NOT NULL, " & _
+                "  estatus_proyecto_id INT UNSIGNED NOT NULL, " & _
+                "  semaforo VARCHAR(15) NOT NULL, " & _
+                "  dias_sin_movimiento INT NOT NULL, " & _
+                "  monto DOUBLE NOT NULL DEFAULT 0, " & _
+                "  moneda VARCHAR(10) NOT NULL DEFAULT 'MXN', " & _
+                "  vendedor VARCHAR(150) NOT NULL, " & _
+                "  clasificacion VARCHAR(100) NOT NULL, " & _
+                "  atrasado TINYINT(1) NOT NULL DEFAULT 0, " & _
+                "  fecha_registro DATETIME NOT NULL, " & _
+                "  INDEX idx_fecha (fecha), " & _
+                "  INDEX idx_proyecto (proyecto_id) " & _
+                ");"
+            Using cmm As New MySqlConnector.MySqlCommand(sqlCreate, cx_MySQL_local)
+                cmm.ExecuteNonQuery()
+            End Using
+        Catch ex As Exception
+            LogEventos.Escribir("Error en AsegurarTablaHistoricaProyectos: " & ex.Message)
+        End Try
+    End Sub
+
+    ''' <summary>
+    ''' Consulta y procesa todos los proyectos a partir del 24/08/2026 y hasta la etapa 7.
+    ''' Calcula fechas de último movimiento, fechas compromiso, días de inactividad y evalúa el semáforo.
+    ''' </summary>
+    Private Function ConsultarProyectosSeguimiento() As List(Of ItemProyectoInforme)
+        Dim resultado As New List(Of ItemProyectoInforme)()
+
+        Dim sqlQuery As String =
+            "SELECT " & _
+            "  v.id AS venta_id, " & _
+            "  COALESCE(v.proyecto_id, '') AS proyecto_id, " & _
+            "  COALESCE(v.titulo, '') AS titulo, " & _
+            "  COALESCE(cp.id, 0) AS clasificacion_id, " & _
+            "  COALESCE(cp.clasificacion, 'SIN CLASIFICACIÓN') AS clasificacion_nombre, " & _
+            "  COALESCE(v.ccveusuario_vendedor, '') AS ccveusuario_vendedor, " & _
+            "  COALESCE(TRIM(CONCAT_WS(' ', m.cnombre, m.cpriapellido, m.csegapellido)), v.ccveusuario_vendedor, 'SIN ASIGNAR') AS vendedor_nombre, " & _
+            "  COALESCE(cli.nombre_comercial, cli.razon_social, 'CLIENTE NO DEFINIDO') AS cliente_nombre, " & _
+            "  COALESCE(v.cliente_final, '') AS cliente_final, " & _
+            "  v.estatus_proyecto_id, " & _
+            "  COALESCE(ep.cEstatus, 'ESTATUS DESCONOCIDO') AS estatus_nombre, " & _
+            "  v.fchregistro AS fecha_creacion, " & _
+            "  v.fecha AS fecha_proyecto, " & _
+            "  v.moneda_id, " & _
+            "  COALESCE(tc.siglas, 'MXN') AS moneda_siglas, " & _
+            "  COALESCE(NULLIF(v.total, 0), (SELECT SUM(pc.total) FROM tb_pedidos_cliente pc WHERE pc.venta_id = v.id), (SELECT SUM(cc.total) FROM tb_ventas_cotizacion_cliente cc WHERE cc.venta_id = v.id AND cc.activo = 1), 0) AS total_monto, " & _
+            "  (SELECT MAX(fchregistro) FROM tb_ventas_seguimiento WHERE venta_id = v.id) AS ult_seg_fch, " & _
+            "  (SELECT MAX(fchregistro) FROM tb_ventas_cotizacion_cliente WHERE venta_id = v.id) AS ult_cot_fch, " & _
+            "  (SELECT MAX(fchregistro) FROM tb_pedidos_cliente WHERE venta_id = v.id) AS ult_ped_fch, " & _
+            "  (SELECT MAX(fchregistro) FROM tb_compras_cotizaciones WHERE venta_id = v.id) AS ult_compras_fch, " & _
+            "  v.fchregistroactualiza AS ult_act_fch, " & _
+            "  (SELECT MIN(pcd.fecha_estimada_entrega) FROM tb_pedidos_cliente pc JOIN tb_pedidos_cliente_detalle pcd ON pc.id = pcd.pedido_id WHERE pc.venta_id = v.id AND pcd.fecha_estimada_entrega IS NOT NULL) AS fch_compromiso_cliente, " & _
+            "  (SELECT MIN(ppd.fecha_estimada_entrega) FROM tb_pedidos_proveedor pp JOIN tb_pedidos_proveedor_detalle ppd ON pp.id = ppd.pedido_proveedor_id WHERE pp.venta_id = v.id AND ppd.fecha_estimada_entrega IS NOT NULL) AS fch_compromiso_proveedor, " & _
+            "  (SELECT MAX(cc.fecha_vigencia) FROM tb_ventas_cotizacion_cliente cc WHERE cc.venta_id = v.id AND cc.activo = 1) AS fch_vigencia_cot, " & _
+            "  (SELECT COUNT(*) FROM tb_ventas_cotizacion_cliente cc WHERE cc.venta_id = v.id AND cc.activo = 1) AS total_cotizaciones_cliente, " & _
+            "  (SELECT COUNT(*) FROM tb_pedidos_cliente pc WHERE pc.venta_id = v.id) AS total_pedidos_cliente, " & _
+            "  (SELECT COUNT(*) FROM tb_compras_cotizaciones com WHERE com.venta_id = v.id) AS total_solicitudes_proveedor " & _
+            "FROM tb_ventas v " & _
+            "LEFT JOIN cat_clasificacion_proyectos cp ON v.clasificacion_proyecto_id = cp.id " & _
+            "LEFT JOIN cat_medico m ON v.ccveusuario_vendedor = m.ccvemedico " & _
+            "LEFT JOIN cat_clientes cli ON v.cliente_id = cli.id " & _
+            "LEFT JOIN cat_estatus_proyecto ep ON v.estatus_proyecto_id = ep.Id " & _
+            "LEFT JOIN cat_tipos_cambio tc ON v.moneda_id = tc.id " & _
+            "WHERE v.activo = 'ACTIVO' " & _
+            "  AND v.estatus_proyecto_id <= 7 " & _
+            "  AND v.fecha >= '2026-08-24' " & _
+            "ORDER BY cp.clasificacion, vendedor_nombre, v.id DESC;"
+
+        Dim dtProyectos As DataTable = tb_Recordset_MySQL_local(sqlQuery)
+        If dtProyectos Is Nothing Then Return resultado
+
+        For Each r As DataRow In dtProyectos.Rows
+            Dim item As New ItemProyectoInforme()
+            item.VentaId = Convert.ToInt32(r("venta_id"))
+            item.ProyectoId = If(Not IsDBNull(r("proyecto_id")), r("proyecto_id").ToString().Trim(), "")
+            item.Titulo = If(Not IsDBNull(r("titulo")), r("titulo").ToString().Trim(), "")
+            item.ClasificacionId = If(Not IsDBNull(r("clasificacion_id")), Convert.ToInt32(r("clasificacion_id")), 0)
+            item.ClasificacionNombre = If(Not IsDBNull(r("clasificacion_nombre")), r("clasificacion_nombre").ToString().Trim(), "SIN CLASIFICACIÓN")
+            item.VendedorClave = If(Not IsDBNull(r("ccveusuario_vendedor")), r("ccveusuario_vendedor").ToString().Trim(), "")
+            item.VendedorNombre = If(Not IsDBNull(r("vendedor_nombre")), r("vendedor_nombre").ToString().Trim(), "SIN ASIGNAR")
+            item.ClienteNombre = If(Not IsDBNull(r("cliente_nombre")), r("cliente_nombre").ToString().Trim(), "CLIENTE NO DEFINIDO")
+            item.ClienteFinal = If(Not IsDBNull(r("cliente_final")), r("cliente_final").ToString().Trim(), "")
+            item.EstatusId = If(Not IsDBNull(r("estatus_proyecto_id")), Convert.ToInt32(r("estatus_proyecto_id")), 0)
+            item.EstatusNombre = If(Not IsDBNull(r("estatus_nombre")), r("estatus_nombre").ToString().Trim(), "ESTATUS DESCONOCIDO")
+
+            ' Fechas base
+            Dim fchCrea As DateTime = DateTime.Now
+            If Not IsDBNull(r("fecha_creacion")) AndAlso DateTime.TryParse(r("fecha_creacion").ToString(), fchCrea) Then
+                item.FechaCreacion = fchCrea
+            Else
+                item.FechaCreacion = DateTime.Now
+            End If
+
+            If Not IsDBNull(r("fecha_proyecto")) Then
+                Dim tmpFchPry As DateTime
+                If DateTime.TryParse(r("fecha_proyecto").ToString(), tmpFchPry) Then
+                    item.FechaProyecto = tmpFchPry
+                End If
+            End If
+
+            ' Moneda y Monto
+            item.MonedaId = If(Not IsDBNull(r("moneda_id")), Convert.ToInt32(r("moneda_id")), 1)
+            item.MonedaSiglas = If(Not IsDBNull(r("moneda_siglas")), r("moneda_siglas").ToString().Trim(), "MXN")
+            item.TotalMonto = If(Not IsDBNull(r("total_monto")), Convert.ToDouble(r("total_monto")), 0)
+
+            ' Contadores
+            item.TotalCotizacionesCliente = If(Not IsDBNull(r("total_cotizaciones_cliente")), Convert.ToInt32(r("total_cotizaciones_cliente")), 0)
+            item.TotalPedidosCliente = If(Not IsDBNull(r("total_pedidos_cliente")), Convert.ToInt32(r("total_pedidos_cliente")), 0)
+            item.TotalSolicitudesProveedor = If(Not IsDBNull(r("total_solicitudes_proveedor")), Convert.ToInt32(r("total_solicitudes_proveedor")), 0)
+
+            ' Cálculo de Fecha de Último Movimiento
+            Dim fechasMov As New List(Of DateTime)()
+            fechasMov.Add(item.FechaCreacion)
+            If item.FechaProyecto.HasValue Then fechasMov.Add(item.FechaProyecto.Value)
+
+            If Not IsDBNull(r("ult_act_fch")) Then
+                Dim dtTmp As DateTime
+                If DateTime.TryParse(r("ult_act_fch").ToString(), dtTmp) Then fechasMov.Add(dtTmp)
+            End If
+            If Not IsDBNull(r("ult_seg_fch")) Then
+                Dim dtTmp As DateTime
+                If DateTime.TryParse(r("ult_seg_fch").ToString(), dtTmp) Then fechasMov.Add(dtTmp)
+            End If
+            If Not IsDBNull(r("ult_cot_fch")) Then
+                Dim dtTmp As DateTime
+                If DateTime.TryParse(r("ult_cot_fch").ToString(), dtTmp) Then fechasMov.Add(dtTmp)
+            End If
+            If Not IsDBNull(r("ult_ped_fch")) Then
+                Dim dtTmp As DateTime
+                If DateTime.TryParse(r("ult_ped_fch").ToString(), dtTmp) Then fechasMov.Add(dtTmp)
+            End If
+            If Not IsDBNull(r("ult_compras_fch")) Then
+                Dim dtTmp As DateTime
+                If DateTime.TryParse(r("ult_compras_fch").ToString(), dtTmp) Then fechasMov.Add(dtTmp)
+            End If
+
+            item.FechaUltimoMovimiento = fechasMov.Max()
+            Dim diasInactivo As Integer = CInt(Math.Floor((DateTime.Now.Date - item.FechaUltimoMovimiento.Date).TotalDays))
+            item.DiasSinMovimiento = If(diasInactivo < 0, 0, diasInactivo)
+
+            ' Resolución de Fecha Compromiso
+            If Not IsDBNull(r("fch_compromiso_cliente")) Then
+                Dim dtComp As DateTime
+                If DateTime.TryParse(r("fch_compromiso_cliente").ToString(), dtComp) Then
+                    item.FechaCompromiso = dtComp
+                    item.TipoFechaCompromiso = "Entrega cliente"
+                End If
+            ElseIf Not IsDBNull(r("fch_compromiso_proveedor")) Then
+                Dim dtComp As DateTime
+                If DateTime.TryParse(r("fch_compromiso_proveedor").ToString(), dtComp) Then
+                    item.FechaCompromiso = dtComp
+                    item.TipoFechaCompromiso = "Entrega proveedor"
+                End If
+            ElseIf Not IsDBNull(r("fch_vigencia_cot")) Then
+                Dim dtComp As DateTime
+                If DateTime.TryParse(r("fch_vigencia_cot").ToString(), dtComp) Then
+                    item.FechaCompromiso = dtComp
+                    item.TipoFechaCompromiso = "Vigencia cotización"
+                End If
+            End If
+
+            If item.FechaCompromiso.HasValue Then
+                item.DiasParaCompromiso = CInt(Math.Floor((item.FechaCompromiso.Value.Date - DateTime.Now.Date).TotalDays))
+            End If
+
+            ' Próxima Acción Requerida y Responsable según Estatus
+            Select Case item.EstatusId
+                Case 1 ' OPORTUNIDAD DE VENTA
+                    item.ProximaAccion = "Elaborar cotización interna o enviar solicitud de cotización a compras/proveedores"
+                    item.Responsable = "Ventas (" & item.VendedorNombre & ")"
+                Case 2 ' CANCELADO
+                    item.ProximaAccion = "Proyecto cancelado / cerrado en bitácora"
+                    item.Responsable = "Ventas (" & item.VendedorNombre & ")"
+                Case 3 ' COTIZACION DE PROVEEDOR
+                    item.ProximaAccion = "Dar seguimiento a respuesta de proveedores y registrar costos en el sistema"
+                    item.Responsable = "Compras / Ventas"
+                Case 4 ' COTIZACION INTERNA ELABORADA
+                    item.ProximaAccion = "Generar y enviar formalmente la cotización de venta al cliente"
+                    item.Responsable = "Ventas (" & item.VendedorNombre & ")"
+                Case 5 ' COTIZACION CLIENTE ELABORADA
+                    item.ProximaAccion = "Seguimiento comercial con cliente para cierre de venta y recepción de OC"
+                    item.Responsable = "Ventas (" & item.VendedorNombre & ")"
+                Case 6 ' ORDEN COMPRA CLIENTE
+                    item.ProximaAccion = "Colocar Orden de Compra formal al proveedor e iniciar aprovisionamiento"
+                    item.Responsable = "Compras"
+                Case 7 ' ORDEN COMPRA PROVEEDOR
+                    item.ProximaAccion = "Monitorear entrega del proveedor y coordinar recepción e inspección en almacén"
+                    item.Responsable = "Compras / Almacén"
+                Case Else
+                    item.ProximaAccion = "Seguimiento operativo general del proyecto"
+                    item.Responsable = "Ventas / Operaciones"
+            End Select
+
+            ' =====================================================================
+            ' Motor de Evaluación de Semáforo Automático (VERDE, AMARILLO, ROJO)
+            ' =====================================================================
+            EvaluarSemaforoProyecto(item)
+
+            resultado.Add(item)
+        Next
+
+        Return resultado
+    End Function
+
+    ''' <summary>
+    ''' Evalúa rigurosamente el semáforo automático del proyecto (VERDE, AMARILLO, ROJO),
+    ''' su indicador de riesgo y el motivo de su prioridad.
+    ''' </summary>
+    Private Sub EvaluarSemaforoProyecto(ByVal item As ItemProyectoInforme)
+        ' 1. Regla Crítica: Fecha Compromiso Vencida
+        If item.FechaCompromiso.HasValue AndAlso item.DiasParaCompromiso.HasValue AndAlso item.DiasParaCompromiso.Value < 0 Then
+            item.Semaforo = "ROJO"
+            item.MotivoPrioridad = String.Format("Fecha compromiso ({0}) vencida hace {1} día(s)", item.TipoFechaCompromiso, Math.Abs(item.DiasParaCompromiso.Value))
+            item.IndicadorRiesgo = "CRÍTICO - Compromiso Vencido"
+            Return
+        End If
+
+        ' 2. Regla Crítica: Inactividad severa (> 15 días sin movimiento)
+        If item.DiasSinMovimiento > 15 Then
+            item.Semaforo = "ROJO"
+            item.MotivoPrioridad = String.Format("Estancamiento severo: {0} días sin ningún movimiento", item.DiasSinMovimiento)
+            item.IndicadorRiesgo = "CRÍTICO - Inactividad > 15 días"
+            Return
+        End If
+
+        ' 3. Regla Crítica: En cotización temprana (1, 3, 4) con más de 7 días sin movimiento
+        If (item.EstatusId = 1 OrElse item.EstatusId = 3 OrElse item.EstatusId = 4) AndAlso item.DiasSinMovimiento > 7 Then
+            item.Semaforo = "ROJO"
+            item.MotivoPrioridad = String.Format("Cotización detenida durante {0} días sin avance", item.DiasSinMovimiento)
+            item.IndicadorRiesgo = "ALTO - Retraso en Cotización"
+            Return
+        End If
+
+        ' 4. Regla Crítica: Orden de Compra Cliente recibida (6) sin colocar a proveedor por más de 3 días
+        If item.EstatusId = 6 AndAlso item.DiasSinMovimiento > 3 Then
+            item.Semaforo = "ROJO"
+            item.MotivoPrioridad = String.Format("OC de cliente recibida hace {0} días sin colocar pedido a proveedor", item.DiasSinMovimiento)
+            item.IndicadorRiesgo = "ALTO - Retraso en Colocación a Proveedor"
+            Return
+        End If
+
+        ' 5. Regla Crítica: Proyectos de alto impacto económico sin movimiento > 5 días
+        Dim esAltoValor As Boolean = (item.TotalMonto >= 100000.0) OrElse (item.MonedaSiglas.Equals("USD", StringComparison.OrdinalIgnoreCase) AndAlso item.TotalMonto >= 5000.0)
+        If esAltoValor AndAlso item.DiasSinMovimiento > 5 Then
+            item.Semaforo = "ROJO"
+            item.MotivoPrioridad = String.Format("Proyecto de alto valor ({0:C2} {1}) sin movimiento por {2} días", item.TotalMonto, item.MonedaSiglas, item.DiasSinMovimiento)
+            item.IndicadorRiesgo = "ALTO - Impacto Económico Detenido"
+            Return
+        End If
+
+        ' 6. Regla Preventiva: Fecha compromiso próxima a vencer (0 a 3 días)
+        If item.FechaCompromiso.HasValue AndAlso item.DiasParaCompromiso.HasValue AndAlso item.DiasParaCompromiso.Value >= 0 AndAlso item.DiasParaCompromiso.Value <= 3 Then
+            item.Semaforo = "AMARILLO"
+            If item.DiasParaCompromiso.Value = 0 Then
+                item.MotivoPrioridad = String.Format("Fecha compromiso ({0}) vence HOY", item.TipoFechaCompromiso)
+            Else
+                item.MotivoPrioridad = String.Format("Fecha compromiso ({0}) próxima: vence en {1} día(s)", item.TipoFechaCompromiso, item.DiasParaCompromiso.Value)
+            End If
+            item.IndicadorRiesgo = "MEDIO - Vencimiento Próximo"
+            Return
+        End If
+
+        ' 7. Regla Preventiva: Inactividad moderada (4 a 15 días)
+        If item.DiasSinMovimiento >= 4 AndAlso item.DiasSinMovimiento <= 15 Then
+            item.Semaforo = "AMARILLO"
+            item.MotivoPrioridad = String.Format("Seguimiento preventivo: {0} días sin movimiento", item.DiasSinMovimiento)
+            item.IndicadorRiesgo = "MEDIO - Sin Movimiento (4-15 días)"
+            Return
+        End If
+
+        ' 8. Regla Preventiva: Cotización de proveedor en espera por 3 a 7 días
+        If item.EstatusId = 3 AndAlso item.DiasSinMovimiento >= 3 Then
+            item.Semaforo = "AMARILLO"
+            item.MotivoPrioridad = String.Format("En espera de cotización de proveedor durante {0} días", item.DiasSinMovimiento)
+            item.IndicadorRiesgo = "MEDIO - Espera Proveedor"
+            Return
+        End If
+
+        ' 9. Regla Preventiva: Cotización cliente emitida hace 4 a 10 días sin resolución
+        If item.EstatusId = 5 AndAlso item.DiasSinMovimiento >= 4 Then
+            item.Semaforo = "AMARILLO"
+            item.MotivoPrioridad = String.Format("Cotización emitida hace {0} días pendiente de respuesta comercial", item.DiasSinMovimiento)
+            item.IndicadorRiesgo = "MEDIO - Seguimiento Comercial"
+            Return
+        End If
+
+        ' 10. Normal: Proyecto al día
+        item.Semaforo = "VERDE"
+        item.MotivoPrioridad = String.Format("Actividad reciente ({0} días sin mov), en tiempo", item.DiasSinMovimiento)
+        item.IndicadorRiesgo = "BAJO - En Tiempo"
+    End Sub
+
+    ''' <summary>
+    ''' Guarda el snapshot diario de proyectos en tb_informe_proyectos_historico para respaldar comparativos futuros.
+    ''' </summary>
+    Private Sub GuardarSnapshotHistoricoProyectos(ByVal proyectos As List(Of ItemProyectoInforme))
+        Try
+            ' Eliminar snapshot del día de hoy en caso de reejecución para evitar registros duplicados
+            Dim sqlDel As String = "DELETE FROM tb_informe_proyectos_historico WHERE fecha = CURDATE()"
+            Using cmmDel As New MySqlConnector.MySqlCommand(sqlDel, cx_MySQL_local)
+                cmmDel.ExecuteNonQuery()
+            End Using
+
+            ' Insertar cada proyecto evaluado
+            Dim sqlInsert As String =
+                "INSERT INTO tb_informe_proyectos_historico " & _
+                "(fecha, venta_id, proyecto_id, estatus_proyecto_id, semaforo, dias_sin_movimiento, monto, moneda, vendedor, clasificacion, atrasado, fecha_registro) " & _
+                "VALUES (@fecha, @venta_id, @proyecto_id, @estatus_id, @semaforo, @dias_sin_mov, @monto, @moneda, @vendedor, @clasificacion, @atrasado, NOW());"
+
+            For Each p In proyectos
+                Using cmmIns As New MySqlConnector.MySqlCommand(sqlInsert, cx_MySQL_local)
+                    cmmIns.Parameters.AddWithValue("@fecha", DateTime.Now.Date)
+                    cmmIns.Parameters.AddWithValue("@venta_id", p.VentaId)
+                    cmmIns.Parameters.AddWithValue("@proyecto_id", p.ProyectoId)
+                    cmmIns.Parameters.AddWithValue("@estatus_id", p.EstatusId)
+                    cmmIns.Parameters.AddWithValue("@semaforo", p.Semaforo)
+                    cmmIns.Parameters.AddWithValue("@dias_sin_mov", p.DiasSinMovimiento)
+                    cmmIns.Parameters.AddWithValue("@monto", p.TotalMonto)
+                    cmmIns.Parameters.AddWithValue("@moneda", p.MonedaSiglas)
+                    cmmIns.Parameters.AddWithValue("@vendedor", p.VendedorNombre)
+                    cmmIns.Parameters.AddWithValue("@clasificacion", p.ClasificacionNombre)
+                    cmmIns.Parameters.AddWithValue("@atrasado", If(p.Semaforo = "ROJO", 1, 0))
+                    cmmIns.ExecuteNonQuery()
+                End Using
+            Next
+        Catch ex As Exception
+            LogEventos.Escribir("Error en GuardarSnapshotHistoricoProyectos: " & ex.Message)
+        End Try
+    End Sub
+
+    ''' <summary>
+    ''' Recupera el snapshot histórico más cercano según los días de desfase solicitados (1 día atrás o 7 días atrás).
+    ''' </summary>
+    Private Function ObtenerSnapshotHistorico(ByVal diasAtras As Integer) As DataTable
+        Try
+            Dim sqlSnap As String = ""
+            If diasAtras = 1 Then
+                sqlSnap = "SELECT * FROM tb_informe_proyectos_historico WHERE fecha = (SELECT MAX(fecha) FROM tb_informe_proyectos_historico WHERE fecha < CURDATE())"
+            Else
+                sqlSnap = String.Format("SELECT * FROM tb_informe_proyectos_historico WHERE fecha = (SELECT MAX(fecha) FROM tb_informe_proyectos_historico WHERE fecha <= DATE_SUB(CURDATE(), INTERVAL {0} DAY))", diasAtras)
+            End If
+            Return tb_Recordset_MySQL_local(sqlSnap)
+        Catch ex As Exception
+            LogEventos.Escribir("Error en ObtenerSnapshotHistorico: " & ex.Message)
+            Return Nothing
+        End Try
+    End Function
+
+    ''' <summary>
+    ''' Construye el cuerpo del correo HTML completo del Informe Ejecutivo de Seguimiento de Proyectos.
+    ''' </summary>
+    Private Function GenerarHtmlInformeEjecutivoProyectos(ByVal proyectos As List(Of ItemProyectoInforme),
+                                                          ByVal dtSnapAyer As DataTable,
+                                                          ByVal dtSnap7Dias As DataTable) As String
+        Dim sb As New System.Text.StringBuilder()
+
+        ' Métricas globales
+        Dim totalProyectos As Integer = proyectos.Count
+        Dim verdesCount As Integer = proyectos.Where(Function(p) p.Semaforo = "VERDE").Count()
+        Dim amarillosCount As Integer = proyectos.Where(Function(p) p.Semaforo = "AMARILLO").Count()
+        Dim rojosCount As Integer = proyectos.Where(Function(p) p.Semaforo = "ROJO").Count()
+
+        Dim pctVerdes As Double = If(totalProyectos > 0, Math.Round((CDbl(verdesCount) / CDbl(totalProyectos)) * 100.0, 1), 0)
+        Dim pctAmarillos As Double = If(totalProyectos > 0, Math.Round((CDbl(amarillosCount) / CDbl(totalProyectos)) * 100.0, 1), 0)
+        Dim pctRojos As Double = If(totalProyectos > 0, Math.Round((CDbl(rojosCount) / CDbl(totalProyectos)) * 100.0, 1), 0)
+
+        Dim totalMontoUSD As Double = proyectos.Where(Function(p) p.MonedaSiglas.Equals("USD", StringComparison.OrdinalIgnoreCase)).Sum(Function(p) p.TotalMonto)
+        Dim totalMontoMXN As Double = proyectos.Where(Function(p) Not p.MonedaSiglas.Equals("USD", StringComparison.OrdinalIgnoreCase)).Sum(Function(p) p.TotalMonto)
+
+        sb.AppendLine("<!DOCTYPE html>")
+        sb.AppendLine("<html>")
+        sb.AppendLine("<head>")
+        sb.AppendLine("<meta http-equiv=""Content-Type"" content=""text/html; charset=utf-8"" />")
+        sb.AppendLine("<meta name=""viewport"" content=""width=device-width, initial-scale=1.0"" />")
+        sb.AppendLine("<style type=""text/css"">")
+        sb.AppendLine("  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #0f172a; margin: 0; padding: 20px; color: #1e293b; }")
+        sb.AppendLine("  .wrapper { max-width: 1080px; margin: 0 auto; background-color: #ffffff; border-radius: 10px; overflow: hidden; box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2); }")
+        sb.AppendLine("  .main-header { background: linear-gradient(135deg, #091e42 0%, #1e3a8a 100%); color: #ffffff; padding: 28px 32px; text-align: left; }")
+        sb.AppendLine("  .main-header h1 { margin: 0 0 6px 0; font-size: 22px; font-weight: 700; letter-spacing: -0.5px; color: #ffffff; }")
+        sb.AppendLine("  .main-header p { margin: 0; font-size: 13px; color: #93c5fd; }")
+        sb.AppendLine("  .kpi-banner { width: 100%; border-collapse: collapse; background-color: #f8fafc; border-bottom: 2px solid #e2e8f0; text-align: center; }")
+        sb.AppendLine("  .kpi-cell { padding: 14px 10px; border-right: 1px solid #e2e8f0; }")
+        sb.AppendLine("  .kpi-label { font-size: 10px; text-transform: uppercase; font-weight: 700; letter-spacing: 0.5px; color: #64748b; margin-bottom: 4px; }")
+        sb.AppendLine("  .kpi-value { font-size: 18px; font-weight: 800; }")
+        sb.AppendLine("  .kpi-val-tot { color: #1e293b; }")
+        sb.AppendLine("  .kpi-val-grn { color: #15803d; }")
+        sb.AppendLine("  .kpi-val-yel { color: #b45309; }")
+        sb.AppendLine("  .kpi-val-red { color: #b91c1c; }")
+        sb.AppendLine("  .kpi-val-mto { color: #0369a1; font-size: 15px; }")
+        sb.AppendLine("  .container { padding: 26px 32px; }")
+        sb.AppendLine("  .sec-heading { font-size: 16px; font-weight: 700; color: #0f172a; margin: 26px 0 14px 0; padding-bottom: 8px; border-bottom: 2px solid #cbd5e1; display: flex; align-items: center; }")
+        sb.AppendLine("  .badge-v { display: inline-block; background-color: #dcfce7; color: #15803d; border: 1px solid #86efac; padding: 2px 7px; border-radius: 10px; font-weight: 700; font-size: 11px; }")
+        sb.AppendLine("  .badge-a { display: inline-block; background-color: #fef9c3; color: #a16207; border: 1px solid #fde047; padding: 2px 7px; border-radius: 10px; font-weight: 700; font-size: 11px; }")
+        sb.AppendLine("  .badge-r { display: inline-block; background-color: #fee2e2; color: #b91c1c; border: 1px solid #fca5a5; padding: 2px 7px; border-radius: 10px; font-weight: 700; font-size: 11px; }")
+        sb.AppendLine("  table.data-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 18px; }")
+        sb.AppendLine("  table.data-table th { background-color: #f1f5f9; color: #334155; font-weight: 700; padding: 8px 10px; border-bottom: 2px solid #cbd5e1; text-transform: uppercase; font-size: 11px; text-align: left; }")
+        sb.AppendLine("  table.data-table td { padding: 8px 10px; border-bottom: 1px solid #e2e8f0; vertical-align: middle; }")
+        sb.AppendLine("  table.data-table tr:nth-child(even) { background-color: #f8fafc; }")
+        sb.AppendLine("  .clasif-block { margin-bottom: 26px; border: 1px solid #cbd5e1; border-radius: 6px; overflow: hidden; }")
+        sb.AppendLine("  .clasif-bar { background-color: #1e3a8a; color: #ffffff; padding: 10px 16px; font-weight: 700; font-size: 14px; text-transform: uppercase; letter-spacing: 0.5px; }")
+        sb.AppendLine("  .vendedor-bar { background-color: #e2e8f0; color: #0f172a; padding: 7px 16px; font-weight: 700; font-size: 12px; border-top: 1px solid #cbd5e1; border-bottom: 1px solid #cbd5e1; }")
+        sb.AppendLine("  .card-prio { border-left: 5px solid #dc2626; background-color: #fff1f2; padding: 12px 16px; margin-bottom: 12px; border-radius: 4px; border-top: 1px solid #fecdd3; border-right: 1px solid #fecdd3; border-bottom: 1px solid #fecdd3; }")
+        sb.AppendLine("  .card-prio-title { font-size: 13px; font-weight: 700; color: #991b1b; margin-bottom: 4px; }")
+        sb.AppendLine("  .card-prio-meta { font-size: 11px; color: #475569; line-height: 1.5; }")
+        sb.AppendLine("  .analisis-box { background-color: #f0fdf4; border: 1px solid #bbf7d0; border-left: 5px solid #16a34a; border-radius: 6px; padding: 16px 20px; margin-bottom: 22px; font-size: 12px; line-height: 1.6; color: #1e293b; }")
+        sb.AppendLine("  .analisis-box ul { margin: 6px 0 0 18px; padding: 0; }")
+        sb.AppendLine("  .analisis-box li { margin-bottom: 6px; }")
+        sb.AppendLine("  .footer { background-color: #f8fafc; border-top: 1px solid #e2e8f0; padding: 18px 32px; font-size: 11px; color: #64748b; text-align: center; }")
+        sb.AppendLine("</style>")
+        sb.AppendLine("</head>")
+        sb.AppendLine("<body>")
+        sb.AppendLine("<div class=""wrapper"">")
+
+        ' 1. Header principal
+        sb.AppendLine("  <table role=""presentation"" border=""0"" cellpadding=""0"" cellspacing=""0"" width=""100%"" class=""main-header"">")
+        sb.AppendLine("    <tr>")
+        sb.AppendLine("      <td style=""padding: 24px 32px;"">")
+        sb.AppendLine("        <h1>Informe Ejecutivo de Seguimiento de Proyectos</h1>")
+        sb.AppendLine(String.Format("        <p>Cartera Activa desde el 24 de Agosto de 2026 (Etapas 1 a 7) &bull; Emitido el {0}</p>", DateTime.Now.ToString("dd/MM/yyyy HH:mm:ss")))
+        sb.AppendLine("      </td>")
+        sb.AppendLine("    </tr>")
+        sb.AppendLine("  </table>")
+
+        ' 2. Banner superior de Indicadores Clave (KPI)
+        sb.AppendLine("  <table role=""presentation"" border=""0"" cellpadding=""0"" cellspacing=""0"" class=""kpi-banner"">")
+        sb.AppendLine("    <tr>")
+        sb.AppendLine(String.Format("      <td class=""kpi-cell""><div class=""kpi-label"">Total Proyectos</div><div class=""kpi-value kpi-val-tot"">{0}</div></td>", totalProyectos))
+        sb.AppendLine(String.Format("      <td class=""kpi-cell""><div class=""kpi-label"">Verdes</div><div class=""kpi-value kpi-val-grn"">{0} <span style=""font-size: 11px; font-weight: normal;"">({1}%)</span></div></td>", verdesCount, pctVerdes))
+        sb.AppendLine(String.Format("      <td class=""kpi-cell""><div class=""kpi-label"">Amarillos</div><div class=""kpi-value kpi-val-yel"">{0} <span style=""font-size: 11px; font-weight: normal;"">({1}%)</span></div></td>", amarillosCount, pctAmarillos))
+        sb.AppendLine(String.Format("      <td class=""kpi-cell""><div class=""kpi-label"">Rojos</div><div class=""kpi-value kpi-val-red"">{0} <span style=""font-size: 11px; font-weight: normal;"">({1}%)</span></div></td>", rojosCount, pctRojos))
+        sb.AppendLine(String.Format("      <td class=""kpi-cell""><div class=""kpi-label"">Pendientes Críticos</div><div class=""kpi-value kpi-val-red"">{0}</div></td>", rojosCount))
+        sb.AppendLine(String.Format("      <td class=""kpi-cell"" style=""border-right: none;""><div class=""kpi-label"">Monto en Cartera</div><div class=""kpi-value kpi-val-mto"">${0:N0} USD<br/><span style=""font-size: 11px; color: #475569;"">${1:N0} MXN</span></div></td>", totalMontoUSD, totalMontoMXN))
+        sb.AppendLine("    </tr>")
+        sb.AppendLine("  </table>")
+
+        sb.AppendLine("  <div class=""container"">")
+
+        ' 3. Resumen Ejecutivo
+        sb.Append(GenerarResumenEjecutivoProyectosHtml(proyectos))
+
+        ' 4. Pendientes Identificados y Contabilizados
+        sb.Append(GenerarPendientesProyectosHtml(proyectos))
+
+        ' 5. Antigüedad y Proyectos Destacados
+        sb.Append(GenerarAntiguedadProyectosHtml(proyectos))
+
+        ' 6. Análisis Ejecutivo Automático Inteligente
+        sb.Append(GenerarAnalisisEjecutivoTextoHtml(proyectos, dtSnapAyer))
+
+        ' 7. Prioridades de Atención Inmediata
+        sb.Append(GenerarPrioridadesAtencionHtml(proyectos))
+
+        ' 8. Comparativo Histórico
+        sb.Append(GenerarComparativoHistoricoHtml(proyectos, dtSnapAyer, dtSnap7Dias))
+
+        ' 9. Detalle Completo de Proyectos (Agrupado por Clasificación -> Vendedor)
+        sb.Append(GenerarDetalleProyectosHtml(proyectos))
+
+        sb.AppendLine("  </div>")
+
+        ' Pie de página institucional
+        sb.AppendLine("  <div class=""footer"">")
+        sb.AppendLine("    <p style=""margin: 0 0 4px 0; font-weight: 700;"">HistoMedic LFM RPA Robot &bull; Informe Ejecutivo Diario de Seguimiento de Proyectos</p>")
+        sb.AppendLine("    <p style=""margin: 0;"">Generado automáticamente para el cuerpo directivo y jefes de área. Datos auditados en tiempo real.</p>")
+        sb.AppendLine("  </div>")
+
+        sb.AppendLine("</div>")
+        sb.AppendLine("</body>")
+        sb.AppendLine("</html>")
+
+        Return sb.ToString()
+    End Function
+
+    ''' <summary>
+    ''' Sección 3: Resumen Ejecutivo con totales, estatus, clasificaciones, vendedores y montos.
+    ''' </summary>
+    Private Function GenerarResumenEjecutivoProyectosHtml(ByVal proyectos As List(Of ItemProyectoInforme)) As String
+        Dim sb As New System.Text.StringBuilder()
+
+        Dim totalActivos As Integer = proyectos.Where(Function(p) p.EstatusId <> 2).Count()
+        Dim nuevosHoy As Integer = proyectos.Where(Function(p) p.FechaCreacion.Date = DateTime.Now.Date).Count()
+        Dim actualizadosHoy As Integer = proyectos.Where(Function(p) p.FechaUltimoMovimiento.Date = DateTime.Now.Date).Count()
+        Dim sinMovimiento As Integer = proyectos.Where(Function(p) p.DiasSinMovimiento >= 4).Count()
+        Dim cerradosGanados As Integer = proyectos.Where(Function(p) p.EstatusId = 6 OrElse p.EstatusId = 7).Count()
+        Dim canceladosPerdidos As Integer = proyectos.Where(Function(p) p.EstatusId = 2).Count()
+
+        Dim verdesCount As Integer = proyectos.Where(Function(p) p.Semaforo = "VERDE").Count()
+        Dim amarillosCount As Integer = proyectos.Where(Function(p) p.Semaforo = "AMARILLO").Count()
+        Dim rojosCount As Integer = proyectos.Where(Function(p) p.Semaforo = "ROJO").Count()
+
+        Dim pctV As Double = If(proyectos.Count > 0, Math.Round((CDbl(verdesCount) / CDbl(proyectos.Count)) * 100.0, 1), 0)
+        Dim pctA As Double = If(proyectos.Count > 0, Math.Round((CDbl(amarillosCount) / CDbl(proyectos.Count)) * 100.0, 1), 0)
+        Dim pctR As Double = If(proyectos.Count > 0, Math.Round((CDbl(rojosCount) / CDbl(proyectos.Count)) * 100.0, 1), 0)
+
+        sb.AppendLine("    <div class=""sec-heading"">&#128202; 1. Resumen Ejecutivo</div>")
+
+        ' Cuadrícula de tarjetas de resumen
+        sb.AppendLine("    <table role=""presentation"" border=""0"" cellpadding=""0"" cellspacing=""0"" style=""width: 100%; border-collapse: collapse; margin-bottom: 20px;"">")
+        sb.AppendLine("      <tr>")
+        sb.AppendLine(String.Format("        <td style=""width: 16.6%; background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 4px; padding: 10px; text-align: center;""><div style=""font-size: 10px; color: #64748b; font-weight: 700; text-transform: uppercase;"">Proyectos Activos</div><div style=""font-size: 16px; font-weight: 800; color: #0f172a;"">{0}</div></td>", totalActivos))
+        sb.AppendLine(String.Format("        <td style=""width: 16.6%; background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 4px; padding: 10px; text-align: center;""><div style=""font-size: 10px; color: #64748b; font-weight: 700; text-transform: uppercase;"">Nuevos Hoy</div><div style=""font-size: 16px; font-weight: 800; color: #2563eb;"">{0}</div></td>", nuevosHoy))
+        sb.AppendLine(String.Format("        <td style=""width: 16.6%; background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 4px; padding: 10px; text-align: center;""><div style=""font-size: 10px; color: #64748b; font-weight: 700; text-transform: uppercase;"">Actualizados Hoy</div><div style=""font-size: 16px; font-weight: 800; color: #059669;"">{0}</div></td>", actualizadosHoy))
+        sb.AppendLine(String.Format("        <td style=""width: 16.6%; background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 4px; padding: 10px; text-align: center;""><div style=""font-size: 10px; color: #64748b; font-weight: 700; text-transform: uppercase;"">Sin Movimiento (&#8805;4d)</div><div style=""font-size: 16px; font-weight: 800; color: #d97706;"">{0}</div></td>", sinMovimiento))
+        sb.AppendLine(String.Format("        <td style=""width: 16.6%; background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 4px; padding: 10px; text-align: center;""><div style=""font-size: 10px; color: #64748b; font-weight: 700; text-transform: uppercase;"">En Colocación (OC)</div><div style=""font-size: 16px; font-weight: 800; color: #16a34a;"">{0}</div></td>", cerradosGanados))
+        sb.AppendLine(String.Format("        <td style=""width: 16.6%; background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 4px; padding: 10px; text-align: center;""><div style=""font-size: 10px; color: #64748b; font-weight: 700; text-transform: uppercase;"">Cancelados / Perdidos</div><div style=""font-size: 16px; font-weight: 800; color: #dc2626;"">{0}</div></td>", canceladosPerdidos))
+        sb.AppendLine("      </tr>")
+        sb.AppendLine("    </table>")
+
+        ' Distribución Semáforo
+        sb.AppendLine("    <div style=""margin-bottom: 16px; padding: 12px 16px; background-color: #f1f5f9; border-radius: 6px; font-size: 12px;"">")
+        sb.AppendLine(String.Format("      <strong>Estado de Salud del Semáforo:</strong> &nbsp; " & _
+                                    "<span class=""badge-v"">&#9679; VERDES: {0} ({1}%)</span> &nbsp; " & _
+                                    "<span class=""badge-a"">&#9679; AMARILLOS: {2} ({3}%)</span> &nbsp; " & _
+                                    "<span class=""badge-r"">&#9679; ROJOS: {4} ({5}%)</span>",
+                                    verdesCount, pctV, amarillosCount, pctA, rojosCount, pctR))
+        sb.AppendLine("    </div>")
+
+        ' Resumen por Clasificación y por Vendedor en 2 columnas
+        sb.AppendLine("    <table role=""presentation"" border=""0"" cellpadding=""0"" cellspacing=""0"" style=""width: 100%; border-collapse: collapse; margin-bottom: 15px;"">")
+        sb.AppendLine("      <tr style=""vertical-align: top;"">")
+
+        ' Columna 1: Por Clasificación
+        sb.AppendLine("        <td style=""width: 49%; padding-right: 1%;"">")
+        sb.AppendLine("          <table class=""data-table"">")
+        sb.AppendLine("            <thead>")
+        sb.AppendLine("              <tr><th>Clasificación</th><th style=""text-align: center;"">Proy.</th><th style=""text-align: right;"">Monto USD</th><th style=""text-align: right;"">Monto MXN</th></tr>")
+        sb.AppendLine("            </thead>")
+        sb.AppendLine("            <tbody>")
+        Dim clasifs = proyectos.GroupBy(Function(p) p.ClasificacionNombre).OrderByDescending(Function(g) g.Count)
+        For Each g In clasifs
+            Dim mtoUSD As Double = g.Where(Function(p) p.MonedaSiglas.Equals("USD", StringComparison.OrdinalIgnoreCase)).Sum(Function(p) p.TotalMonto)
+            Dim mtoMXN As Double = g.Where(Function(p) Not p.MonedaSiglas.Equals("USD", StringComparison.OrdinalIgnoreCase)).Sum(Function(p) p.TotalMonto)
+            sb.AppendLine(String.Format("              <tr><td><strong>{0}</strong></td><td style=""text-align: center;"">{1}</td><td style=""text-align: right;"">${2:N2}</td><td style=""text-align: right;"">${3:N2}</td></tr>",
+                                        System.Net.WebUtility.HtmlEncode(g.Key), g.Count, mtoUSD, mtoMXN))
+        Next
+        sb.AppendLine("            </tbody>")
+        sb.AppendLine("          </table>")
+        sb.AppendLine("        </td>")
+
+        ' Columna 2: Por Vendedor
+        sb.AppendLine("        <td style=""width: 49%; padding-left: 1%;"">")
+        sb.AppendLine("          <table class=""data-table"">")
+        sb.AppendLine("            <thead>")
+        sb.AppendLine("              <tr><th>Vendedor</th><th style=""text-align: center;"">Proy.</th><th style=""text-align: right;"">Monto USD</th><th style=""text-align: right;"">Monto MXN</th></tr>")
+        sb.AppendLine("            </thead>")
+        sb.AppendLine("            <tbody>")
+        Dim vends = proyectos.GroupBy(Function(p) p.VendedorNombre).OrderByDescending(Function(g) g.Count)
+        For Each g In vends
+            Dim mtoUSD As Double = g.Where(Function(p) p.MonedaSiglas.Equals("USD", StringComparison.OrdinalIgnoreCase)).Sum(Function(p) p.TotalMonto)
+            Dim mtoMXN As Double = g.Where(Function(p) Not p.MonedaSiglas.Equals("USD", StringComparison.OrdinalIgnoreCase)).Sum(Function(p) p.TotalMonto)
+            sb.AppendLine(String.Format("              <tr><td><strong>{0}</strong></td><td style=""text-align: center;"">{1}</td><td style=""text-align: right;"">${2:N2}</td><td style=""text-align: right;"">${3:N2}</td></tr>",
+                                        System.Net.WebUtility.HtmlEncode(g.Key), g.Count, mtoUSD, mtoMXN))
+        Next
+        sb.AppendLine("            </tbody>")
+        sb.AppendLine("          </table>")
+        sb.AppendLine("        </td>")
+
+        sb.AppendLine("      </tr>")
+        sb.AppendLine("    </table>")
+
+        Return sb.ToString()
+    End Function
+
+    ''' <summary>
+    ''' Sección 4: Contabilización detallada de los 8 tipos de pendientes operativos y comerciales.
+    ''' </summary>
+    Private Function GenerarPendientesProyectosHtml(ByVal proyectos As List(Of ItemProyectoInforme)) As String
+        Dim sb As New System.Text.StringBuilder()
+
+        Dim pendOCCliente As Integer = proyectos.Where(Function(p) p.EstatusId = 5).Count()
+        Dim pendCotInterna As Integer = proyectos.Where(Function(p) p.EstatusId = 1 OrElse p.EstatusId = 3).Count()
+        Dim procesoCotProv As Integer = proyectos.Where(Function(p) p.EstatusId = 3 OrElse (p.TotalSolicitudesProveedor > 0 AndAlso p.EstatusId = 1)).Count()
+        Dim pendEnviarCotCli As Integer = proyectos.Where(Function(p) p.EstatusId = 4).Count()
+        Dim pendRespCliente As Integer = proyectos.Where(Function(p) p.EstatusId = 5 AndAlso p.TotalCotizacionesCliente > 0).Count()
+        Dim pendInfo As Integer = proyectos.Where(Function(p) p.EstatusId = 1 AndAlso p.TotalCotizacionesCliente = 0 AndAlso p.TotalSolicitudesProveedor = 0).Count()
+        Dim fchCompVencida As Integer = proyectos.Where(Function(p) p.FechaCompromiso.HasValue AndAlso p.DiasParaCompromiso.HasValue AndAlso p.DiasParaCompromiso.Value < 0).Count()
+        Dim sinMov4d As Integer = proyectos.Where(Function(p) p.DiasSinMovimiento >= 4).Count()
+
+        sb.AppendLine("    <div class=""sec-heading"">&#9888;&#65039; 2. Balance y Conteo de Pendientes</div>")
+        sb.AppendLine("    <table class=""data-table"">")
+        sb.AppendLine("      <thead>")
+        sb.AppendLine("        <tr><th>Categoría de Pendiente Detectado</th><th style=""text-align: center;"">Proyectos</th><th>Impacto Operativo / Comercial</th><th style=""text-align: center;"">Acción Requerida</th></tr>")
+        sb.AppendLine("      </thead>")
+        sb.AppendLine("      <tbody>")
+        sb.AppendLine(String.Format("        <tr><td><strong>Pendientes de Orden de Compra del Cliente</strong></td><td style=""text-align: center; font-weight: bold; color: #b45309;"">{0}</td><td>Cotizaciones en poder del cliente sin decisión formal de compra</td><td style=""text-align: center;"">Cierre comercial</td></tr>", pendOCCliente))
+        sb.AppendLine(String.Format("        <tr><td><strong>Pendientes de Elaborar Cotización Interna</strong></td><td style=""text-align: center; font-weight: bold; color: #b45309;"">{0}</td><td>Oportunidades abiertas esperando cálculo de costos y márgenes</td><td style=""text-align: center;"">Ingeniería de costos</td></tr>", pendCotInterna))
+        sb.AppendLine(String.Format("        <tr><td><strong>En Proceso de Cotización de Proveedor</strong></td><td style=""text-align: center; font-weight: bold;"">{0}</td><td>Solicitudes enviadas a fabricantes en espera de precio y tiempo entrega</td><td style=""text-align: center;"">Seguimiento compras</td></tr>", procesoCotProv))
+        sb.AppendLine(String.Format("        <tr><td><strong>Pendientes de Enviar Cotización al Cliente</strong></td><td style=""text-align: center; font-weight: bold; color: #b91c1c;"">{0}</td><td>Cotización interna lista, pendiente de emisión formal al cliente</td><td style=""text-align: center;"">Envío inmediato</td></tr>", pendEnviarCotCli))
+        sb.AppendLine(String.Format("        <tr><td><strong>Pendientes de Respuesta / Confirmación del Cliente</strong></td><td style=""text-align: center; font-weight: bold;"">{0}</td><td>Propuesta técnica-económica entregada al cliente</td><td style=""text-align: center;"">Llamada de seguimiento</td></tr>", pendRespCliente))
+        sb.AppendLine(String.Format("        <tr><td><strong>Pendientes de Información Técnica / Especificación</strong></td><td style=""text-align: center; font-weight: bold;"">{0}</td><td>Oportunidades en fase inicial sin datos completos para cotizar</td><td style=""text-align: center;"">Levantamiento de datos</td></tr>", pendInfo))
+        sb.AppendLine(String.Format("        <tr style=""background-color: #fef2f2;""><td><strong style=""color: #b91c1c;"">Proyectos con Fecha Compromiso Vencida</strong></td><td style=""text-align: center; font-weight: 800; color: #b91c1c;"">{0}</td><td style=""color: #991b1b;"">Compromiso de entrega o vigencia superado; alto riesgo de penalización o pérdida</td><td style=""text-align: center; font-weight: bold; color: #b91c1c;"">Intervención Urgente</td></tr>", fchCompVencida))
+        sb.AppendLine(String.Format("        <tr><td><strong>Proyectos Sin Movimiento (&#8805; 4 días)</strong></td><td style=""text-align: center; font-weight: bold; color: #d97706;"">{0}</td><td>Proyectos estancados que requieren reactivación y actualización en bitácora</td><td style=""text-align: center;"">Revisión de estatus</td></tr>", sinMov4d))
+        sb.AppendLine("      </tbody>")
+        sb.AppendLine("    </table>")
+
+        Return sb.ToString()
+    End Function
+
+    ''' <summary>
+    ''' Sección 5: Clasificación de proyectos por antigüedad de inactividad.
+    ''' </summary>
+    Private Function GenerarAntiguedadProyectosHtml(ByVal proyectos As List(Of ItemProyectoInforme)) As String
+        Dim sb As New System.Text.StringBuilder()
+
+        Dim r0_3 As Integer = proyectos.Where(Function(p) p.DiasSinMovimiento <= 3).Count()
+        Dim r4_7 As Integer = proyectos.Where(Function(p) p.DiasSinMovimiento >= 4 AndAlso p.DiasSinMovimiento <= 7).Count()
+        Dim r8_15 As Integer = proyectos.Where(Function(p) p.DiasSinMovimiento >= 8 AndAlso p.DiasSinMovimiento <= 15).Count()
+        Dim r16mas As Integer = proyectos.Where(Function(p) p.DiasSinMovimiento > 15).Count()
+
+        Dim proyMasAntiguo = proyectos.OrderByDescending(Function(p) p.DiasSinMovimiento).FirstOrDefault()
+        Dim proyMayorMonto = proyectos.OrderByDescending(Function(p) p.TotalMonto).FirstOrDefault()
+
+        sb.AppendLine("    <div class=""sec-heading"">&#9201; 3. Análisis de Antigüedad de Inactividad</div>")
+        sb.AppendLine("    <table role=""presentation"" border=""0"" cellpadding=""0"" cellspacing=""0"" style=""width: 100%; border-collapse: collapse; margin-bottom: 12px;"">")
+        sb.AppendLine("      <tr>")
+        sb.AppendLine(String.Format("        <td style=""width: 25%; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 4px; padding: 10px; text-align: center;""><div style=""font-size: 11px; font-weight: 700; color: #15803d;"">0 a 3 Días (Al día)</div><div style=""font-size: 18px; font-weight: 800; color: #16a34a;"">{0} proy.</div></td>", r0_3))
+        sb.AppendLine(String.Format("        <td style=""width: 25%; background: #fefce8; border: 1px solid #fef08a; border-radius: 4px; padding: 10px; text-align: center;""><div style=""font-size: 11px; font-weight: 700; color: #854d0e;"">4 a 7 Días (Seguimiento)</div><div style=""font-size: 18px; font-weight: 800; color: #ca8a04;"">{0} proy.</div></td>", r4_7))
+        sb.AppendLine(String.Format("        <td style=""width: 25%; background: #fff7ed; border: 1px solid #fed7aa; border-radius: 4px; padding: 10px; text-align: center;""><div style=""font-size: 11px; font-weight: 700; color: #9a3412;"">8 a 15 Días (Atención)</div><div style=""font-size: 18px; font-weight: 800; color: #ea580c;"">{0} proy.</div></td>", r8_15))
+        sb.AppendLine(String.Format("        <td style=""width: 25%; background: #fef2f2; border: 1px solid #fecaca; border-radius: 4px; padding: 10px; text-align: center;""><div style=""font-size: 11px; font-weight: 700; color: #991b1b;"">Más de 15 Días (Crítico)</div><div style=""font-size: 18px; font-weight: 800; color: #dc2626;"">{0} proy.</div></td>", r16mas))
+        sb.AppendLine("      </tr>")
+        sb.AppendLine("    </table>")
+
+        ' Destacar Proyectos con mayor antigüedad y mayor monto
+        sb.AppendLine("    <div style=""font-size: 11px; color: #475569; margin-bottom: 20px;"">")
+        If proyMasAntiguo IsNot Nothing Then
+            sb.AppendLine(String.Format("      &bull; <strong>Mayor inactividad registrada:</strong> Folio <span style=""color: #0f172a; font-weight: 700;"">{0}</span> ({1} - {2}) con <strong>{3} días</strong> sin actualización.<br/>",
+                                        proyMasAntiguo.ProyectoId, System.Net.WebUtility.HtmlEncode(proyMasAntiguo.ClienteNombre), System.Net.WebUtility.HtmlEncode(proyMasAntiguo.VendedorNombre), proyMasAntiguo.DiasSinMovimiento))
+        End If
+        If proyMayorMonto IsNot Nothing Then
+            sb.AppendLine(String.Format("      &bull; <strong>Mayor valor económico en cartera:</strong> Folio <span style=""color: #0f172a; font-weight: 700;"">{0}</span> ({1}) por <strong>{2:C2} {3}</strong> &bull; Estatus: {4} &bull; Semáforo: {5}.",
+                                        proyMayorMonto.ProyectoId, System.Net.WebUtility.HtmlEncode(proyMayorMonto.ClienteNombre), proyMayorMonto.TotalMonto, proyMayorMonto.MonedaSiglas, proyMayorMonto.EstatusNombre, proyMayorMonto.Semaforo))
+        End If
+        sb.AppendLine("    </div>")
+
+        Return sb.ToString()
+    End Function
+
+    ''' <summary>
+    ''' Sección 6: Análisis Ejecutivo Inteligente estructurado para directores y jefes de área.
+    ''' </summary>
+    Private Function GenerarAnalisisEjecutivoTextoHtml(ByVal proyectos As List(Of ItemProyectoInforme), ByVal dtSnapAyer As DataTable) As String
+        Dim sb As New System.Text.StringBuilder()
+
+        Dim totalP As Integer = proyectos.Count
+        Dim rojos = proyectos.Where(Function(p) p.Semaforo = "ROJO").OrderByDescending(Function(p) p.TotalMonto).ToList()
+        Dim amarillos = proyectos.Where(Function(p) p.Semaforo = "AMARILLO").ToList()
+        Dim verdes = proyectos.Where(Function(p) p.Semaforo = "VERDE").ToList()
+
+        ' Vendedor con mayor concentración de proyectos en ROJO o AMARILLO
+        Dim vendedoresCriticos = proyectos.Where(Function(p) p.Semaforo = "ROJO" OrElse p.Semaforo = "AMARILLO") _
+                                          .GroupBy(Function(p) p.VendedorNombre) _
+                                          .OrderByDescending(Function(g) g.Count) _
+                                          .ToList()
+        Dim topVendCriticoNombre As String = If(vendedoresCriticos.Count > 0, vendedoresCriticos(0).Key, "N/A")
+        Dim topVendCriticoCount As Integer = If(vendedoresCriticos.Count > 0, vendedoresCriticos(0).Count, 0)
+
+        ' Proyectos de mayor impacto económico en riesgo (ROJO)
+        Dim topRojoMonto = rojos.FirstOrDefault()
+
+        ' Transiciones de semáforo (de VERDE ayer a AMARILLO/ROJO hoy)
+        Dim degradados As New List(Of String)()
+        If dtSnapAyer IsNot Nothing AndAlso dtSnapAyer.Rows.Count > 0 Then
+            For Each p In proyectos
+                If p.Semaforo = "AMARILLO" OrElse p.Semaforo = "ROJO" Then
+                    Dim rowsAyer = dtSnapAyer.Select(String.Format("proyecto_id = '{0}'", p.ProyectoId.Replace("'", "''")))
+                    If rowsAyer.Length > 0 Then
+                        Dim semAyer As String = rowsAyer(0)("semaforo").ToString().Trim()
+                        If semAyer.Equals("VERDE", StringComparison.OrdinalIgnoreCase) Then
+                            degradados.Add(String.Format("{0} ({1} &rarr; {2})", p.ProyectoId, semAyer, p.Semaforo))
+                        End If
+                    End If
+                End If
+            Next
+        End If
+
+        sb.AppendLine("    <div class=""sec-heading"">&#128065; 4. Análisis Ejecutivo Inteligente</div>")
+        sb.AppendLine("    <div class=""analisis-box"">")
+        sb.AppendLine("      <div style=""font-weight: 700; font-size: 13px; color: #166534; margin-bottom: 6px;"">&#9658; Diagnóstico General y Comportamiento del Semáforo:</div>")
+        sb.AppendLine("      <ul>")
+
+        ' Diagnóstico 1: Balance general de semáforo
+        Dim pctRojos As Double = If(totalP > 0, Math.Round((CDbl(rojos.Count) / CDbl(totalP)) * 100.0, 1), 0)
+        Dim pctVerdes As Double = If(totalP > 0, Math.Round((CDbl(verdes.Count) / CDbl(totalP)) * 100.0, 1), 0)
+        sb.AppendLine(String.Format("        <li><strong>Estado de la Cartera:</strong> De un universo de <strong>{0} proyectos</strong> activos desde el 24/08/2026, el <strong>{1}% ({2} proyectos)</strong> opera en condiciones óptimas (VERDE), mientras que el <strong>{3}% ({4} proyectos)</strong> se encuentra en semáforo ROJO requiriendo acción resolutiva prioritaria.</li>",
+                                    totalP, pctVerdes, verdes.Count, pctRojos, rojos.Count))
+
+        ' Diagnóstico 2: Proyectos críticos en ROJO y motivos
+        If rojos.Count > 0 Then
+            Dim foliosTopRojos As String = String.Join(", ", rojos.Take(4).Select(Function(p) p.ProyectoId & " (" & p.MotivoPrioridad & ")"))
+            sb.AppendLine(String.Format("        <li><strong>Foco Rojo Crítico:</strong> Los proyectos de mayor prioridad en ROJO son: {0}.</li>", foliosTopRojos))
+        Else
+            sb.AppendLine("        <li><strong>Sin Focos Rojos:</strong> No se detectaron proyectos con retrasos críticos o compromisos vencidos.</li>")
+        End If
+
+        ' Diagnóstico 3: Mayor impacto económico en riesgo
+        If topRojoMonto IsNot Nothing AndAlso topRojoMonto.TotalMonto > 0 Then
+            sb.AppendLine(String.Format("        <li><strong>Riesgo Económico:</strong> El proyecto con mayor capital comprometido en situación de riesgo es <strong>{0}</strong> ({1}) con un importe de <strong>{2:C2} {3}</strong> a cargo de <em>{4}</em>.</li>",
+                                        topRojoMonto.ProyectoId, System.Net.WebUtility.HtmlEncode(topRojoMonto.ClienteNombre), topRojoMonto.TotalMonto, topRojoMonto.MonedaSiglas, System.Net.WebUtility.HtmlEncode(topRojoMonto.VendedorNombre)))
+        End If
+
+        ' Diagnóstico 4: Concentración por Vendedor
+        If topVendCriticoCount > 0 Then
+            sb.AppendLine(String.Format("        <li><strong>Concentración de Pendientes:</strong> El ejecutivo <strong>{0}</strong> concentra <strong>{1} proyectos</strong> con necesidad de atención inmediata o seguimiento preventivo. Se recomienda coordinar reunión de desahogo comercial.</li>",
+                                        System.Net.WebUtility.HtmlEncode(topVendCriticoNombre), topVendCriticoCount))
+        End If
+
+        ' Diagnóstico 5: Alerta de transiciones respecto a ayer
+        If degradados.Count > 0 Then
+            sb.AppendLine(String.Format("        <li><strong style=""color: #b91c1c;"">Alerta de Deterioro de Semáforo:</strong> {0} proyecto(s) pasaron de VERDE a condición de advertencia: <strong>{1}</strong>.</li>",
+                                        degradados.Count, String.Join(", ", degradados)))
+        ElseIf dtSnapAyer IsNot Nothing AndAlso dtSnapAyer.Rows.Count > 0 Then
+            sb.AppendLine("        <li><strong>Estabilidad del Semáforo:</strong> No se presentaron degradaciones de proyectos de VERDE a semáforo restrictivo respecto a la jornada previa.</li>")
+        End If
+
+        ' Diagnóstico 6: Recomendación Directiva
+        sb.AppendLine("        <li><strong>Intervención Directiva Sugerida:</strong> Agilizar la confirmación de cotizaciones pendientes de orden de compra con clientes clave e instruir a compras la colocación expedita de órdenes a proveedores en pedidos ganados.</li>")
+
+        sb.AppendLine("      </ul>")
+        sb.AppendLine("    </div>")
+
+        Return sb.ToString()
+    End Function
+
+    ''' <summary>
+    ''' Sección 7: Prioridades de Atención con ordenamiento estricto por criticidad.
+    ''' </summary>
+    Private Function GenerarPrioridadesAtencionHtml(ByVal proyectos As List(Of ItemProyectoInforme)) As String
+        Dim sb As New System.Text.StringBuilder()
+
+        ' Ordenamiento por prioridad:
+        ' 1. Semáforo ROJO primero, luego AMARILLO, luego VERDE
+        ' 2. Compromiso vencido o próximo
+        ' 3. Días sin movimiento descendente
+        ' 4. Monto económico descendente
+        Dim prioritarios = proyectos.OrderBy(Function(p) If(p.Semaforo = "ROJO", 0, If(p.Semaforo = "AMARILLO", 1, 2))) _
+                                    .ThenBy(Function(p) If(p.DiasParaCompromiso.HasValue, p.DiasParaCompromiso.Value, 9999)) _
+                                    .ThenByDescending(Function(p) p.DiasSinMovimiento) _
+                                    .ThenByDescending(Function(p) p.TotalMonto) _
+                                    .Take(8) _
+                                    .ToList()
+
+        sb.AppendLine("    <div class=""sec-heading"">&#127919; 5. Prioridades de Atención Inmediata</div>")
+        sb.AppendLine("    <p style=""font-size: 12px; color: #64748b; margin: -6px 0 14px 0;"">Listado clasificado de proyectos que demandan acción ejecutiva inmediata y seguimiento prioritario.</p>")
+
+        For Each p In prioritarios
+            Dim badgeClass As String = If(p.Semaforo = "ROJO", "badge-r", If(p.Semaforo = "AMARILLO", "badge-a", "badge-v"))
+            Dim borderCol As String = If(p.Semaforo = "ROJO", "#dc2626", If(p.Semaforo = "AMARILLO", "#d97706", "#16a34a"))
+            Dim bgCol As String = If(p.Semaforo = "ROJO", "#fff1f2", If(p.Semaforo = "AMARILLO", "#fffbeb", "#f0fdf4"))
+
+            sb.AppendLine(String.Format("    <div class=""card-prio"" style=""border-left-color: {0}; background-color: {1};"">", borderCol, bgCol))
+            sb.AppendLine("      <table role=""presentation"" border=""0"" cellpadding=""0"" cellspacing=""0"" style=""width: 100%; border-collapse: collapse;"">")
+            sb.AppendLine("        <tr>")
+            sb.AppendLine(String.Format("          <td style=""font-size: 13px; font-weight: 700; color: #0f172a;""><span class=""{0}"">&#9679; {1}</span> &nbsp; Folio: <span style=""font-family: Consolas, monospace;"">{2}</span> &bull; {3}</td>",
+                                        badgeClass, p.Semaforo, p.ProyectoId, System.Net.WebUtility.HtmlEncode(p.ClienteNombre)))
+            sb.AppendLine(String.Format("          <td style=""text-align: right; font-weight: 800; font-size: 13px; color: #0f172a;"">{0:C2} {1}</td>", p.TotalMonto, p.MonedaSiglas))
+            sb.AppendLine("        </tr>")
+            sb.AppendLine("      </table>")
+            sb.AppendLine(String.Format("      <div style=""font-size: 12px; color: #334155; margin: 5px 0;""><strong>Descripción:</strong> {0}</div>", System.Net.WebUtility.HtmlEncode(p.Titulo)))
+            sb.AppendLine("      <div class=""card-prio-meta"">")
+            sb.AppendLine(String.Format("        &bull; <strong>Qué está pendiente:</strong> <span style=""color: #991b1b; font-weight: 600;"">{0}</span><br/>", System.Net.WebUtility.HtmlEncode(p.MotivoPrioridad)))
+            sb.AppendLine(String.Format("        &bull; <strong>Quién es responsable:</strong> <span style=""color: #0f172a; font-weight: 600;"">{0}</span><br/>", System.Net.WebUtility.HtmlEncode(p.Responsable)))
+            sb.AppendLine(String.Format("        &bull; <strong>Acción recomendada:</strong> <span style=""color: #1e3a8a; font-weight: 600;"">{0}</span>", System.Net.WebUtility.HtmlEncode(p.ProximaAccion)))
+            sb.AppendLine("      </div>")
+            sb.AppendLine("    </div>")
+        Next
+
+        Return sb.ToString()
+    End Function
+
+    ''' <summary>
+    ''' Sección 8: Comparativo Histórico contra el día anterior y los últimos 7 días.
+    ''' </summary>
+    Private Function GenerarComparativoHistoricoHtml(ByVal proyectos As List(Of ItemProyectoInforme),
+                                                     ByVal dtAyer As DataTable,
+                                                     ByVal dt7Dias As DataTable) As String
+        Dim sb As New System.Text.StringBuilder()
+
+        sb.AppendLine("    <div class=""sec-heading"">&#128200; 6. Comparativo Histórico de Evolución</div>")
+
+        If (dtAyer Is Nothing OrElse dtAyer.Rows.Count = 0) AndAlso (dt7Dias Is Nothing OrElse dt7Dias.Rows.Count = 0) Then
+            sb.AppendLine("    <div style=""padding: 14px 18px; background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; font-size: 12px; color: #475569; margin-bottom: 20px;"">")
+            sb.AppendLine("      &#8505;&#65039; <strong>Primer ciclo de registro histórico del informe.</strong> El comparativo de variación diaria y semanal comenzará a proyectarse automáticamente a partir de la próxima ejecución matutina.")
+            sb.AppendLine("    </div>")
+            Return sb.ToString()
+        End If
+
+        ' Métricas actuales
+        Dim actHoy As Integer = proyectos.Where(Function(p) p.EstatusId <> 2).Count()
+        Dim nuevHoy As Integer = proyectos.Where(Function(p) p.FechaCreacion.Date = DateTime.Now.Date).Count()
+        Dim atrasHoy As Integer = proyectos.Where(Function(p) p.Semaforo = "ROJO").Count()
+        Dim sinMovHoy As Integer = proyectos.Where(Function(p) p.DiasSinMovimiento >= 4).Count()
+        Dim mtoUSDHoy As Double = proyectos.Where(Function(p) p.MonedaSiglas.Equals("USD", StringComparison.OrdinalIgnoreCase)).Sum(Function(p) p.TotalMonto)
+        Dim vHoy As Integer = proyectos.Where(Function(p) p.Semaforo = "VERDE").Count()
+        Dim aHoy As Integer = proyectos.Where(Function(p) p.Semaforo = "AMARILLO").Count()
+        Dim rHoy As Integer = proyectos.Where(Function(p) p.Semaforo = "ROJO").Count()
+
+        ' Métricas ayer
+        Dim actAyer As Integer = If(dtAyer IsNot Nothing, dtAyer.Select("estatus_proyecto_id <> 2").Length, 0)
+        Dim atrasAyer As Integer = If(dtAyer IsNot Nothing, dtAyer.Select("semaforo = 'ROJO'").Length, 0)
+        Dim sinMovAyer As Integer = If(dtAyer IsNot Nothing, dtAyer.Select("dias_sin_movimiento >= 4").Length, 0)
+        Dim vAyer As Integer = If(dtAyer IsNot Nothing, dtAyer.Select("semaforo = 'VERDE'").Length, 0)
+        Dim aAyer As Integer = If(dtAyer IsNot Nothing, dtAyer.Select("semaforo = 'AMARILLO'").Length, 0)
+        Dim rAyer As Integer = If(dtAyer IsNot Nothing, dtAyer.Select("semaforo = 'ROJO'").Length, 0)
+
+        ' Métricas 7 días
+        Dim act7D As Integer = If(dt7Dias IsNot Nothing, dt7Dias.Select("estatus_proyecto_id <> 2").Length, 0)
+        Dim atras7D As Integer = If(dt7Dias IsNot Nothing, dt7Dias.Select("semaforo = 'ROJO'").Length, 0)
+        Dim sinMov7D As Integer = If(dt7Dias IsNot Nothing, dt7Dias.Select("dias_sin_movimiento >= 4").Length, 0)
+        Dim v7D As Integer = If(dt7Dias IsNot Nothing, dt7Dias.Select("semaforo = 'VERDE'").Length, 0)
+        Dim a7D As Integer = If(dt7Dias IsNot Nothing, dt7Dias.Select("semaforo = 'AMARILLO'").Length, 0)
+        Dim r7D As Integer = If(dt7Dias IsNot Nothing, dt7Dias.Select("semaforo = 'ROJO'").Length, 0)
+
+        sb.AppendLine("    <table class=""data-table"">")
+        sb.AppendLine("      <thead>")
+        sb.AppendLine("        <tr><th>Indicador Ejecutivo</th><th style=""text-align: center;"">Hoy</th><th style=""text-align: center;"">Día Anterior</th><th style=""text-align: center;"">Hace 7 Días</th><th style=""text-align: center;"">Tendencia</th></tr>")
+        sb.AppendLine("      </thead>")
+        sb.AppendLine("      <tbody>")
+        sb.AppendLine(String.Format("        <tr><td><strong>Proyectos Activos</strong></td><td style=""text-align: center; font-weight: 700;"">{0}</td><td style=""text-align: center;"">{1}</td><td style=""text-align: center;"">{2}</td><td style=""text-align: center;"">{3}</td></tr>",
+                                    actHoy, If(dtAyer IsNot Nothing, actAyer.ToString(), "-"), If(dt7Dias IsNot Nothing, act7D.ToString(), "-"), FormatearTendencia(actHoy, actAyer)))
+        sb.AppendLine(String.Format("        <tr><td><strong>Proyectos Atrasados / Críticos (ROJO)</strong></td><td style=""text-align: center; font-weight: 700; color: #b91c1c;"">{0}</td><td style=""text-align: center;"">{1}</td><td style=""text-align: center;"">{2}</td><td style=""text-align: center;"">{3}</td></tr>",
+                                    atrasHoy, If(dtAyer IsNot Nothing, atrasAyer.ToString(), "-"), If(dt7Dias IsNot Nothing, atras7D.ToString(), "-"), FormatearTendenciaInversa(atrasHoy, atrasAyer)))
+        sb.AppendLine(String.Format("        <tr><td><strong>Proyectos Sin Movimiento (&#8805; 4 días)</strong></td><td style=""text-align: center; font-weight: 700;"">{0}</td><td style=""text-align: center;"">{1}</td><td style=""text-align: center;"">{2}</td><td style=""text-align: center;"">{3}</td></tr>",
+                                    sinMovHoy, If(dtAyer IsNot Nothing, sinMovAyer.ToString(), "-"), If(dt7Dias IsNot Nothing, sinMov7D.ToString(), "-"), FormatearTendenciaInversa(sinMovHoy, sinMovAyer)))
+        sb.AppendLine(String.Format("        <tr><td><strong>Evolución Semáforo VERDE</strong></td><td style=""text-align: center; font-weight: 700; color: #15803d;"">{0}</td><td style=""text-align: center;"">{1}</td><td style=""text-align: center;"">{2}</td><td style=""text-align: center;"">{3}</td></tr>",
+                                    vHoy, If(dtAyer IsNot Nothing, vAyer.ToString(), "-"), If(dt7Dias IsNot Nothing, v7D.ToString(), "-"), FormatearTendencia(vHoy, vAyer)))
+        sb.AppendLine(String.Format("        <tr><td><strong>Evolución Semáforo AMARILLO</strong></td><td style=""text-align: center; font-weight: 700; color: #a16207;"">{0}</td><td style=""text-align: center;"">{1}</td><td style=""text-align: center;"">{2}</td><td style=""text-align: center;"">{3}</td></tr>",
+                                    aHoy, If(dtAyer IsNot Nothing, aAyer.ToString(), "-"), If(dt7Dias IsNot Nothing, a7D.ToString(), "-"), "-"))
+        sb.AppendLine(String.Format("        <tr><td><strong>Evolución Semáforo ROJO</strong></td><td style=""text-align: center; font-weight: 700; color: #b91c1c;"">{0}</td><td style=""text-align: center;"">{1}</td><td style=""text-align: center;"">{2}</td><td style=""text-align: center;"">{3}</td></tr>",
+                                    rHoy, If(dtAyer IsNot Nothing, rAyer.ToString(), "-"), If(dt7Dias IsNot Nothing, r7D.ToString(), "-"), FormatearTendenciaInversa(rHoy, rAyer)))
+        sb.AppendLine("      </tbody>")
+        sb.AppendLine("    </table>")
+
+        Return sb.ToString()
+    End Function
+
+    Private Function FormatearTendencia(ByVal actual As Integer, ByVal anterior As Integer) As String
+        If anterior = 0 Then Return "-"
+        Dim diff As Integer = actual - anterior
+        If diff > 0 Then Return String.Format("<span style=""color: #16a34a; font-weight: bold;"">&#9650; +{0}</span>", diff)
+        If diff < 0 Then Return String.Format("<span style=""color: #dc2626; font-weight: bold;"">&#9660; {0}</span>", diff)
+        Return "<span style=""color: #64748b;"">&#9644; 0</span>"
+    End Function
+
+    Private Function FormatearTendenciaInversa(ByVal actual As Integer, ByVal anterior As Integer) As String
+        If anterior = 0 Then Return "-"
+        Dim diff As Integer = actual - anterior
+        If diff > 0 Then Return String.Format("<span style=""color: #dc2626; font-weight: bold;"">&#9650; +{0}</span>", diff)
+        If diff < 0 Then Return String.Format("<span style=""color: #16a34a; font-weight: bold;"">&#9660; {0}</span>", diff)
+        Return "<span style=""color: #64748b;"">&#9644; 0</span>"
+    End Function
+
+    ''' <summary>
+    ''' Sección 1 y 9: Detalle Estructurado de Proyectos agrupados por Clasificación -> Vendedor -> Fila de Proyecto.
+    ''' </summary>
+    Private Function GenerarDetalleProyectosHtml(ByVal proyectos As List(Of ItemProyectoInforme)) As String
+        Dim sb As New System.Text.StringBuilder()
+
+        sb.AppendLine("    <div class=""sec-heading"">&#128221; 7. Detalle Estructurado por Clasificación y Vendedor</div>")
+
+        Dim clasificaciones = proyectos.GroupBy(Function(p) p.ClasificacionNombre).OrderBy(Function(g) g.Key)
+
+        For Each grpClasif In clasificaciones
+            Dim totalPryClasif As Integer = grpClasif.Count
+            Dim mtoUSDClasif As Double = grpClasif.Where(Function(p) p.MonedaSiglas.Equals("USD", StringComparison.OrdinalIgnoreCase)).Sum(Function(p) p.TotalMonto)
+            Dim mtoMXNClasif As Double = grpClasif.Where(Function(p) Not p.MonedaSiglas.Equals("USD", StringComparison.OrdinalIgnoreCase)).Sum(Function(p) p.TotalMonto)
+
+            sb.AppendLine("    <div class=""clasif-block"">")
+            sb.AppendLine(String.Format("      <div class=""clasif-bar"">&#9658; Clasificación: {0} ({1} proyectos &bull; ${2:N0} USD &bull; ${3:N0} MXN)</div>",
+                                        System.Net.WebUtility.HtmlEncode(grpClasif.Key), totalPryClasif, mtoUSDClasif, mtoMXNClasif))
+
+            ' Subagrupar por Vendedor
+            Dim vendedores = grpClasif.GroupBy(Function(p) p.VendedorNombre).OrderBy(Function(g) g.Key)
+
+            For Each grpVend In vendedores
+                sb.AppendLine(String.Format("      <div class=""vendedor-bar"">&#128100; Vendedor: {0} ({1} proyectos)</div>",
+                                            System.Net.WebUtility.HtmlEncode(grpVend.Key), grpVend.Count))
+
+                sb.AppendLine("      <table class=""data-table"" style=""margin-bottom: 0;"">")
+                sb.AppendLine("        <thead>")
+                sb.AppendLine("          <tr>")
+                sb.AppendLine("            <th style=""width: 9%;"">Folio</th>")
+                sb.AppendLine("            <th style=""width: 15%;"">Cliente</th>")
+                sb.AppendLine("            <th style=""width: 20%;"">Descripción</th>")
+                sb.AppendLine("            <th style=""width: 11%;"">Estatus</th>")
+                sb.AppendLine("            <th style=""width: 8%; text-align: center;"">Últ. Mov.</th>")
+                sb.AppendLine("            <th style=""width: 5%; text-align: center;"">Inact.</th>")
+                sb.AppendLine("            <th style=""width: 9%; text-align: right;"">Monto</th>")
+                sb.AppendLine("            <th style=""width: 13%;"">Próxima Acción / Resp.</th>")
+                sb.AppendLine("            <th style=""width: 5%; text-align: center;"">Compromiso</th>")
+                sb.AppendLine("            <th style=""width: 5%; text-align: center;"">Semáforo</th>")
+                sb.AppendLine("          </tr>")
+                sb.AppendLine("        </thead>")
+                sb.AppendLine("        <tbody>")
+
+                For Each p In grpVend
+                    Dim badgeCls As String = If(p.Semaforo = "ROJO", "badge-r", If(p.Semaforo = "AMARILLO", "badge-a", "badge-v"))
+                    Dim fchCompStr As String = "-"
+                    If p.FechaCompromiso.HasValue Then
+                        fchCompStr = String.Format("<span title=""{0}"">{1:dd/MM/yy}</span>", p.TipoFechaCompromiso, p.FechaCompromiso.Value)
+                        If p.DiasParaCompromiso.HasValue AndAlso p.DiasParaCompromiso.Value < 0 Then
+                            fchCompStr &= String.Format("<br/><span style=""color: #b91c1c; font-size: 10px; font-weight: bold;"">({0}d)</span>", p.DiasParaCompromiso.Value)
+                        End If
+                    End If
+
+                    Dim clienteStr As String = System.Net.WebUtility.HtmlEncode(p.ClienteNombre)
+                    If Not String.IsNullOrWhiteSpace(p.ClienteFinal) AndAlso Not p.ClienteFinal.Equals(p.ClienteNombre, StringComparison.OrdinalIgnoreCase) Then
+                        clienteStr &= String.Format("<br/><span style=""font-size: 10px; color: #64748b;"">Final: {0}</span>", System.Net.WebUtility.HtmlEncode(p.ClienteFinal))
+                    End If
+
+                    sb.AppendLine("          <tr>")
+                    sb.AppendLine(String.Format("            <td><strong style=""font-family: Consolas, monospace; color: #0f172a;"">{0}</strong></td>", p.ProyectoId))
+                    sb.AppendLine(String.Format("            <td>{0}</td>", clienteStr))
+                    sb.AppendLine(String.Format("            <td style=""font-size: 11px;"">{0}</td>", System.Net.WebUtility.HtmlEncode(p.Titulo)))
+                    sb.AppendLine(String.Format("            <td><span style=""font-size: 10px; background: #e2e8f0; padding: 2px 4px; border-radius: 3px;"">{0}</span></td>", System.Net.WebUtility.HtmlEncode(p.EstatusNombre)))
+                    sb.AppendLine(String.Format("            <td style=""text-align: center; font-size: 11px;"">{0:dd/MM/yy}</td>", p.FechaUltimoMovimiento))
+                    sb.AppendLine(String.Format("            <td style=""text-align: center; font-weight: {0}; color: {1};"">{2}d</td>",
+                                                If(p.DiasSinMovimiento >= 4, "bold", "normal"),
+                                                If(p.DiasSinMovimiento > 15, "#b91c1c", If(p.DiasSinMovimiento >= 4, "#d97706", "#16a34a")),
+                                                p.DiasSinMovimiento))
+                    sb.AppendLine(String.Format("            <td style=""text-align: right; font-weight: bold;"">{0:C2} <span style=""font-size: 10px; color: #64748b;"">{1}</span></td>", p.TotalMonto, p.MonedaSiglas))
+                    sb.AppendLine(String.Format("            <td style=""font-size: 10px; line-height: 1.3;"">{0}<br/><strong style=""color: #1e3a8a;"">{1}</strong></td>",
+                                                System.Net.WebUtility.HtmlEncode(p.ProximaAccion), System.Net.WebUtility.HtmlEncode(p.Responsable)))
+                    sb.AppendLine(String.Format("            <td style=""text-align: center; font-size: 10px;"">{0}</td>", fchCompStr))
+                    sb.AppendLine(String.Format("            <td style=""text-align: center;""><span class=""{0}"">{1}</span></td>", badgeCls, p.Semaforo))
+                    sb.AppendLine("          </tr>")
+                Next
+
+                sb.AppendLine("        </tbody>")
+                sb.AppendLine("      </table>")
+            Next
+
+            sb.AppendLine("    </div>")
+        Next
+
+        Return sb.ToString()
+    End Function
+
+#End Region
 
 #End Region
 
