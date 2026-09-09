@@ -4860,15 +4860,17 @@ intenta_otravz:
         sb.AppendLine("        <td style=""width: 49%; padding-right: 1%;"">")
         sb.AppendLine("          <table class=""data-table"">")
         sb.AppendLine("            <thead>")
-        sb.AppendLine("              <tr><th>Clasificación</th><th style=""text-align: center;"">Proy.</th><th style=""text-align: right;"">Monto USD</th><th style=""text-align: right;"">Monto MXN</th></tr>")
+        sb.AppendLine("              <tr><th>Clasificación</th><th style=""text-align: center;"">Proy.</th><th style=""text-align: center;"">Declinados</th><th style=""text-align: right;"">Monto USD</th><th style=""text-align: right;"">Monto MXN</th></tr>")
         sb.AppendLine("            </thead>")
         sb.AppendLine("            <tbody>")
         Dim clasifs = proyectos.GroupBy(Function(p) p.ClasificacionNombre).OrderByDescending(Function(g) g.Count)
         For Each g In clasifs
             Dim mtoUSD As Double = g.Where(Function(p) p.MonedaSiglas.Equals("USD", StringComparison.OrdinalIgnoreCase)).Sum(Function(p) p.TotalMonto)
             Dim mtoMXN As Double = g.Where(Function(p) Not p.MonedaSiglas.Equals("USD", StringComparison.OrdinalIgnoreCase)).Sum(Function(p) p.TotalMonto)
-            sb.AppendLine(String.Format("              <tr><td><strong>{0}</strong></td><td style=""text-align: center;"">{1}</td><td style=""text-align: right;"">${2:N2}</td><td style=""text-align: right;"">${3:N2}</td></tr>",
-                                        System.Net.WebUtility.HtmlEncode(g.Key), g.Count, mtoUSD, mtoMXN))
+            Dim declinadosGrp As Integer = g.Where(Function(p) p.EsDeclinado).Count()
+            Dim declinadosStr As String = If(declinadosGrp > 0, String.Format("<span style=""color: #dc2626; font-weight: 700;"">{0}</span>", declinadosGrp), "<span style=""color: #94a3b8;"">0</span>")
+            sb.AppendLine(String.Format("              <tr><td><strong>{0}</strong></td><td style=""text-align: center;"">{1}</td><td style=""text-align: center;"">{2}</td><td style=""text-align: right;"">${3:N2}</td><td style=""text-align: right;"">${4:N2}</td></tr>",
+                                        System.Net.WebUtility.HtmlEncode(g.Key), g.Count, declinadosStr, mtoUSD, mtoMXN))
         Next
         sb.AppendLine("            </tbody>")
         sb.AppendLine("          </table>")
@@ -4878,15 +4880,17 @@ intenta_otravz:
         sb.AppendLine("        <td style=""width: 49%; padding-left: 1%;"">")
         sb.AppendLine("          <table class=""data-table"">")
         sb.AppendLine("            <thead>")
-        sb.AppendLine("              <tr><th>Vendedor</th><th style=""text-align: center;"">Proy.</th><th style=""text-align: right;"">Monto USD</th><th style=""text-align: right;"">Monto MXN</th></tr>")
+        sb.AppendLine("              <tr><th>Vendedor</th><th style=""text-align: center;"">Proy.</th><th style=""text-align: center;"">Declinados</th><th style=""text-align: right;"">Monto USD</th><th style=""text-align: right;"">Monto MXN</th></tr>")
         sb.AppendLine("            </thead>")
         sb.AppendLine("            <tbody>")
         Dim vends = proyectos.GroupBy(Function(p) p.VendedorNombre).OrderByDescending(Function(g) g.Count)
         For Each g In vends
             Dim mtoUSD As Double = g.Where(Function(p) p.MonedaSiglas.Equals("USD", StringComparison.OrdinalIgnoreCase)).Sum(Function(p) p.TotalMonto)
             Dim mtoMXN As Double = g.Where(Function(p) Not p.MonedaSiglas.Equals("USD", StringComparison.OrdinalIgnoreCase)).Sum(Function(p) p.TotalMonto)
-            sb.AppendLine(String.Format("              <tr><td><strong>{0}</strong></td><td style=""text-align: center;"">{1}</td><td style=""text-align: right;"">${2:N2}</td><td style=""text-align: right;"">${3:N2}</td></tr>",
-                                        System.Net.WebUtility.HtmlEncode(g.Key), g.Count, mtoUSD, mtoMXN))
+            Dim declinadosVend As Integer = g.Where(Function(p) p.EsDeclinado).Count()
+            Dim declinadosVendStr As String = If(declinadosVend > 0, String.Format("<span style=""color: #dc2626; font-weight: 700;"">{0}</span>", declinadosVend), "<span style=""color: #94a3b8;"">0</span>")
+            sb.AppendLine(String.Format("              <tr><td><strong>{0}</strong></td><td style=""text-align: center;"">{1}</td><td style=""text-align: center;"">{2}</td><td style=""text-align: right;"">${3:N2}</td><td style=""text-align: right;"">${4:N2}</td></tr>",
+                                        System.Net.WebUtility.HtmlEncode(g.Key), g.Count, declinadosVendStr, mtoUSD, mtoMXN))
         Next
         sb.AppendLine("            </tbody>")
         sb.AppendLine("          </table>")
@@ -4915,14 +4919,14 @@ intenta_otravz:
 
         sb.AppendLine("    <div class=""sec-heading"">&#9888;&#65039; 2. Balance y Conteo de Pendientes</div>")
         sb.AppendLine("    <table class=""data-table"">")
-        sb.AppendLine("      </thead>")
+        sb.AppendLine("      <thead>")
         sb.AppendLine("        <tr><th>Categoría de Pendiente Detectado</th><th style=""text-align: center;"">Proyectos</th><th>Impacto Operativo / Comercial</th><th style=""text-align: center;"">Acción Requerida</th></tr>")
         sb.AppendLine("      </thead>")
         sb.AppendLine("      <tbody>")
         sb.AppendLine(String.Format("        <tr><td><strong>Pendientes de Orden de Compra del Cliente</strong></td><td style=""text-align: center; font-weight: bold; color: #b45309;"">{0}</td><td>Cotizaciones en poder del cliente sin decisión formal de compra</td><td style=""text-align: center;"">Cierre comercial</td></tr>", pendOCCliente))
         sb.AppendLine(String.Format("        <tr><td><strong>Pendientes de Elaborar Cotización Interna</strong></td><td style=""text-align: center; font-weight: bold; color: #b45309;"">{0}</td><td>Proyectos cotizados que no se ha enviado cotización interna</td><td style=""text-align: center;"">Ingeniería de costos</td></tr>", pendCotInterna))
         sb.AppendLine(String.Format("        <tr><td><strong>En Proceso de Cotización de Proveedor</strong></td><td style=""text-align: center; font-weight: bold;"">{0}</td><td>Solicitudes enviadas a fabricantes en espera de precio y tiempo entrega</td><td style=""text-align: center;"">Seguimiento compras</td></tr>", procesoCotProv))
-        sb.AppendLine(String.Format("        <tr><td><strong>Pendientes de Enviar Cotización al Cliente</strong></td><td style=""text-align: center; font-weight: bold; color: #b91c1c;"">{0}</td><td>Cotización interna lista, pendiente de emisión formal al cliente</td><td style=""text-align: center;"">Envío inmediato</td></tr>", pendEnviarCotCli))
+        sb.AppendLine(String.Format("        <tr><td><strong>Pendientes de Enviar Cotización al Cliente</strong></td><td style=""text-align: center; font-weight: bold; color: #b91c1c;"">{0}</td><td>Cotización interna lista, pendiente vendedor elabore cotización a cliente.</td><td style=""text-align: center;"">Envío inmediato</td></tr>", pendEnviarCotCli))
         sb.AppendLine(String.Format("        <tr><td><strong>Pendientes de Respuesta / Confirmación del Cliente</strong></td><td style=""text-align: center; font-weight: bold;"">{0}</td><td>Propuesta técnica-económica entregada al cliente</td><td style=""text-align: center;"">Llamada de seguimiento</td></tr>", pendRespCliente))
         sb.AppendLine(String.Format("        <tr><td><strong>Pendientes de Información Técnica / Especificación</strong></td><td style=""text-align: center; font-weight: bold;"">{0}</td><td>Oportunidades en fase inicial sin datos completos para cotizar</td><td style=""text-align: center;"">Levantamiento de datos</td></tr>", pendInfo))
         sb.AppendLine(String.Format("        <tr style=""background-color: #fef2f2;""><td><strong style=""color: #b91c1c;"">Proyectos con Fecha Compromiso Vencida</strong></td><td style=""text-align: center; font-weight: 800; color: #b91c1c;"">{0}</td><td style=""color: #991b1b;"">Compromiso de entrega o vigencia superado; alto riesgo de penalización o pérdida</td><td style=""text-align: center; font-weight: bold; color: #b91c1c;"">Intervención Urgente</td></tr>", fchCompVencida))
