@@ -5229,7 +5229,7 @@ intenta_otravz:
 
         sb.AppendLine("    <div class=""sec-heading"">&#128221; 7. Detalle Estructurado por Clasificación y Vendedor</div>")
 
-        Dim proyectosParaDetalle = proyectos.Where(Function(p) Not p.EsDeclinado).ToList()
+        Dim proyectosParaDetalle = proyectos.Where(Function(p) Not p.EsCanceladoODeclinado).ToList()
         Dim clasificaciones = proyectosParaDetalle.GroupBy(Function(p) p.ClasificacionNombre).OrderBy(Function(g) g.Key)
 
         For Each grpClasif In clasificaciones
