@@ -302,7 +302,7 @@ Public Class frmInterface
             Dim Pwd As String = ""
 
             ' ==================================================================================================================================
-            Dim cadena_conexion_admin As String = "Server=histomedic.mx;Database=mirtheda_admin;Uid=mirtheda_root;Pwd=Bsapmd2cKb*5;SSL Mode=None;"
+            Dim cadena_conexion_admin As String = "Server=histomedic.mx;Database=mirtheda_admin;Uid=mirtheda_root_________________;Pwd=Bsapmd2cKb*5;SSL Mode=None;"
             If cx_MySQL_Admin.State = ConnectionState.Closed Then
                 If Not Test_MySQL_Admin(cadena_conexion_admin) Then
                     _servidorCentralConectado = False
@@ -3483,7 +3483,7 @@ intenta_otravz:
                 "INNER JOIN tb_ventas v ON c.venta_id = v.id " & _
                 "LEFT JOIN cat_clasificacion_proyectos cp ON v.clasificacion_proyecto_id = cp.id " & _
                 "LEFT JOIN tb_proveedores p ON c.proveedor_id = p.icveProveedor " & _
-                "WHERE c.enviado = 0 " & _
+                "WHERE c.enviado = 0 and c.omitir_informe = 0 " & _
                 "  AND (cd.precio_unitario = 0 OR cd.precio_unitario IS NULL) " & _
                 "  AND v.clasificacion_proyecto_id IN (" & String.Join(",", paramNames) & ") " & _
                 "ORDER BY cp.clasificacion, c.folio_solicitud, cd.id;"
@@ -3530,8 +3530,284 @@ intenta_otravz:
     End Sub
 
     ''' <summary>
+    ''' Genera el análisis ejecutivo automático basado exclusivamente en los datos recopilados del periodo actual.
+    ''' Identifica totales, distribución, proyectos/proveedores críticos, antigüedad, alertas y recomendaciones concretas.
+    ''' </summary>
+    Private Function GenerarResumenEjecutivoHtml(ByVal tipoNotificacion As String, ByVal dt As DataTable, ByVal totalSolicitudesCount As Integer) As String
+        Dim sb As New System.Text.StringBuilder()
+        Dim totalPartidas As Integer = dt.Rows.Count
+        If totalPartidas = 0 Then Return ""
+
+        ' -------------------------------------------------------------
+        ' 1. Cálculos Estadísticos y Agrupaciones Derivadas de los Datos
+        ' -------------------------------------------------------------
+        ' A. Clasificaciones
+        Dim dicClasif As New Dictionary(Of String, Integer)()
+        For Each r As DataRow In dt.Rows
+            Dim cName As String = If(Not IsDBNull(r("clasificacion_nombre")), r("clasificacion_nombre").ToString().Trim(), "SIN CLASIFICACIÓN")
+            If Not dicClasif.ContainsKey(cName) Then dicClasif(cName) = 0
+            dicClasif(cName) += 1
+        Next
+        Dim listClasif = dicClasif.OrderByDescending(Function(kvp) kvp.Value).ToList()
+        Dim topClasifNombre As String = listClasif(0).Key
+        Dim topClasifCount As Integer = listClasif(0).Value
+        Dim topClasifPct As Double = Math.Round((CDbl(topClasifCount) / CDbl(totalPartidas)) * 100.0, 1)
+
+        ' B. Proyectos
+        Dim dicPry As New Dictionary(Of String, Tuple(Of String, Integer))()
+        For Each r As DataRow In dt.Rows
+            Dim pryId As String = If(Not IsDBNull(r("proyecto_id")), r("proyecto_id").ToString().Trim(), "SIN-PROYECTO")
+            Dim pryTit As String = If(Not IsDBNull(r("proyecto_titulo")), r("proyecto_titulo").ToString().Trim(), "")
+            If Not dicPry.ContainsKey(pryId) Then
+                dicPry(pryId) = New Tuple(Of String, Integer)(pryTit, 0)
+            End If
+            dicPry(pryId) = New Tuple(Of String, Integer)(pryTit, dicPry(pryId).Item2 + 1)
+        Next
+        Dim listPry = dicPry.OrderByDescending(Function(kvp) kvp.Value.Item2).ToList()
+        Dim topPryId As String = listPry(0).Key
+        Dim topPryTitulo As String = listPry(0).Value.Item1
+        Dim topPryCount As Integer = listPry(0).Value.Item2
+        Dim topPryPct As Double = Math.Round((CDbl(topPryCount) / CDbl(totalPartidas)) * 100.0, 1)
+
+        ' C. Proveedores
+        Dim dicProvPartidas As New Dictionary(Of String, Integer)()
+        Dim dicProvSols As New Dictionary(Of String, HashSet(Of String))()
+        For Each r As DataRow In dt.Rows
+            Dim prov As String = If(Not IsDBNull(r("proveedor_nombre")), r("proveedor_nombre").ToString().Trim(), "PROVEEDOR NO ASIGNADO")
+            If String.IsNullOrWhiteSpace(prov) Then prov = "PROVEEDOR NO ASIGNADO"
+            Dim solId As String = r("cotizacion_id").ToString()
+            If Not dicProvPartidas.ContainsKey(prov) Then
+                dicProvPartidas(prov) = 0
+                dicProvSols(prov) = New HashSet(Of String)()
+            End If
+            dicProvPartidas(prov) += 1
+            dicProvSols(prov).Add(solId)
+        Next
+        Dim listProv = dicProvPartidas.OrderByDescending(Function(kvp) kvp.Value).ToList()
+        Dim topProvNombre As String = listProv(0).Key
+        Dim topProvCount As Integer = listProv(0).Value
+        Dim topProvPct As Double = Math.Round((CDbl(topProvCount) / CDbl(totalPartidas)) * 100.0, 1)
+        Dim topProvSolsCount As Integer = dicProvSols(topProvNombre).Count
+
+        ' D. Solicitudes por volumen
+        Dim dicSolsPartidas As New Dictionary(Of String, Tuple(Of String, String, DateTime?, Integer))()
+        For Each r As DataRow In dt.Rows
+            Dim cotId As String = r("cotizacion_id").ToString()
+            Dim folioSol As String = If(Not IsDBNull(r("folio_solicitud")), r("folio_solicitud").ToString().Trim(), "ID #" & cotId)
+            Dim prov As String = If(Not IsDBNull(r("proveedor_nombre")), r("proveedor_nombre").ToString().Trim(), "PROVEEDOR NO ASIGNADO")
+            Dim fch As DateTime? = Nothing
+            If Not IsDBNull(r("fecha_solicitud")) Then
+                Dim tmpF As DateTime
+                If DateTime.TryParse(r("fecha_solicitud").ToString(), tmpF) Then fch = tmpF
+            End If
+
+            If Not dicSolsPartidas.ContainsKey(cotId) Then
+                dicSolsPartidas(cotId) = New Tuple(Of String, String, DateTime?, Integer)(folioSol, prov, fch, 0)
+            End If
+            Dim curr = dicSolsPartidas(cotId)
+            dicSolsPartidas(cotId) = New Tuple(Of String, String, DateTime?, Integer)(curr.Item1, curr.Item2, curr.Item3, curr.Item4 + 1)
+        Next
+        Dim listSolsVol = dicSolsPartidas.OrderByDescending(Function(kvp) kvp.Value.Item4).ToList()
+        Dim topSolItem = listSolsVol(0).Value
+
+        ' E. Antigüedad
+        Dim maxDiasAntig As Integer = 0
+        Dim solMasAntiguaFolio As String = ""
+        Dim fechaMasAntiguaStr As String = ""
+        Dim solsConFecha = dicSolsPartidas.Values.Where(Function(s) s.Item3.HasValue).OrderBy(Function(s) s.Item3.Value).ToList()
+        If solsConFecha.Count > 0 Then
+            Dim oldest = solsConFecha(0)
+            maxDiasAntig = CInt(Math.Floor((DateTime.Now.Date - oldest.Item3.Value.Date).TotalDays))
+            solMasAntiguaFolio = oldest.Item1
+            fechaMasAntiguaStr = oldest.Item3.Value.ToString("dd/MM/yyyy")
+        End If
+
+        ' F. Detección de Situaciones Relevantes
+        Dim sinProvCount As Integer = If(dicProvPartidas.ContainsKey("PROVEEDOR NO ASIGNADO"), dicProvPartidas("PROVEEDOR NO ASIGNADO"), 0)
+        Dim partidasSinNP As Integer = 0
+        For Each r As DataRow In dt.Rows
+            If IsDBNull(r("num_parte")) OrElse String.IsNullOrWhiteSpace(r("num_parte").ToString()) Then
+                partidasSinNP += 1
+            End If
+        Next
+        Dim solsMas10Dias As Integer = 0
+        For Each s In dicSolsPartidas.Values
+            If s.Item3.HasValue AndAlso (DateTime.Now.Date - s.Item3.Value.Date).TotalDays >= 10 Then
+                solsMas10Dias += 1
+            End If
+        Next
+
+        ' -------------------------------------------------------------
+        ' 2. Construcción del HTML
+        ' -------------------------------------------------------------
+        sb.AppendLine("    <!-- SECCIÓN: ANÁLISIS EJECUTIVO -->")
+        sb.AppendLine("    <div style=""background-color: #ffffff; border: 1px solid #94a3b8; border-left: 6px solid #0284c7; border-radius: 8px; margin-bottom: 28px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.07); overflow: hidden;"">")
+
+        ' Encabezado de la tarjeta ejecutiva
+        sb.AppendLine("      <div style=""background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%); padding: 16px 20px; border-bottom: 1px solid #e2e8f0;"">")
+        sb.AppendLine("        <table style=""width: 100%; border-collapse: collapse;"">")
+        sb.AppendLine("          <tr>")
+        sb.AppendLine("            <td>")
+        sb.AppendLine("              <div style=""font-size: 15px; font-weight: 800; color: #0f172a; text-transform: uppercase; letter-spacing: 0.5px;"">&#128202; ANÁLISIS EJECUTIVO DE COMPRAS</div>")
+        sb.AppendLine("              <div style=""font-size: 12px; color: #64748b; margin-top: 2px;"">Diagnóstico automático y recomendaciones estratégicas orientadas a la toma de decisiones</div>")
+        sb.AppendLine("            </td>")
+        sb.AppendLine(String.Format("            <td style=""text-align: right; font-size: 11px; color: #475569;"">Periodo: <strong>{0}</strong></td>", DateTime.Now.ToString("dd/MM/yyyy")))
+        sb.AppendLine("          </tr>")
+        sb.AppendLine("        </table>")
+        sb.AppendLine("      </div>")
+
+        sb.AppendLine("      <div style=""padding: 20px;"">")
+
+        ' Síntesis Narrativa Ejecutiva
+        sb.AppendLine("        <div style=""background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 14px 18px; margin-bottom: 18px; font-size: 13px; line-height: 1.6; color: #1e293b;"">")
+        sb.AppendFormat("          Se identificaron <strong>{0} solicitudes</strong> con un total de <strong>{1} partidas</strong> pendientes de cotización para {2}. ",
+                        totalSolicitudesCount, totalPartidas, System.Net.WebUtility.HtmlEncode(tipoNotificacion))
+
+        sb.AppendFormat("La mayor concentración por línea corresponde a <strong>{0}</strong>, representando el <strong>{1}%</strong> del total ({2} partidas). ",
+                        System.Net.WebUtility.HtmlEncode(topClasifNombre), topClasifPct, topClasifCount)
+
+        If topProvNombre.Equals("PROVEEDOR NO ASIGNADO", StringComparison.OrdinalIgnoreCase) Then
+            sb.AppendFormat("Se identificó que <strong>{0} partidas ({1}%)</strong> aún no cuentan con proveedor asignado, requiriendo atención inmediata. ",
+                            topProvCount, topProvPct)
+        Else
+            sb.AppendFormat("El proveedor <strong>{0}</strong> concentra el mayor volumen con <strong>{1} partidas ({2}%)</strong> en {3} solicitud(es). ",
+                            System.Net.WebUtility.HtmlEncode(topProvNombre), topProvCount, topProvPct, topProvSolsCount)
+        End If
+
+        If maxDiasAntig > 0 Then
+            sb.AppendFormat("La solicitud con mayor tiempo de espera es <strong>{0}</strong> emitida el {1} (<strong>{2} días</strong> sin cotizar). ",
+                            System.Net.WebUtility.HtmlEncode(solMasAntiguaFolio), fechaMasAntiguaStr, maxDiasAntig)
+        End If
+
+        sb.AppendFormat("Se sugiere dar máxima prioridad a la solicitud <strong>{0}</strong> por concentrar el mayor volumen ({1} partidas).",
+                        System.Net.WebUtility.HtmlEncode(topSolItem.Item1), topSolItem.Item4)
+
+        sb.AppendLine("        </div>")
+
+        ' Cuadrícula de Métricas Clave (4 cajas)
+        sb.AppendLine("        <table style=""width: 100%; border-collapse: separate; border-spacing: 10px; margin-left: -10px; margin-right: -10px; margin-bottom: 18px;"">")
+        sb.AppendLine("          <tr>")
+        ' Tarjeta 1
+        sb.AppendLine("            <td style=""width: 25%; background-color: #f1f5f9; border: 1px solid #cbd5e1; border-radius: 6px; padding: 12px; vertical-align: top;"">")
+        sb.AppendLine("              <div style=""font-size: 11px; color: #64748b; text-transform: uppercase; font-weight: 600;"">Solicitudes Pendientes</div>")
+        sb.AppendLine(String.Format("              <div style=""font-size: 20px; font-weight: 800; color: #0f172a; margin-top: 4px;"">{0}</div>", totalSolicitudesCount))
+        sb.AppendLine(String.Format("              <div style=""font-size: 11px; color: #475569; margin-top: 2px;"">{0} partidas en total</div>", totalPartidas))
+        sb.AppendLine("            </td>")
+        ' Tarjeta 2
+        sb.AppendLine("            <td style=""width: 25%; background-color: #f1f5f9; border: 1px solid #cbd5e1; border-radius: 6px; padding: 12px; vertical-align: top;"">")
+        sb.AppendLine("              <div style=""font-size: 11px; color: #64748b; text-transform: uppercase; font-weight: 600;"">Clasificación Principal</div>")
+        sb.AppendLine(String.Format("              <div style=""font-size: 14px; font-weight: 800; color: #1e3a8a; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"">{0}</div>", System.Net.WebUtility.HtmlEncode(topClasifNombre)))
+        sb.AppendLine(String.Format("              <div style=""font-size: 11px; color: #475569; margin-top: 2px;"">{0} partidas ({1}%)</div>", topClasifCount, topClasifPct))
+        sb.AppendLine("            </td>")
+        ' Tarjeta 3
+        sb.AppendLine("            <td style=""width: 25%; background-color: #f1f5f9; border: 1px solid #cbd5e1; border-radius: 6px; padding: 12px; vertical-align: top;"">")
+        sb.AppendLine("              <div style=""font-size: 11px; color: #64748b; text-transform: uppercase; font-weight: 600;"">Proveedor Líder</div>")
+        sb.AppendLine(String.Format("              <div style=""font-size: 14px; font-weight: 800; color: #0f172a; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"">{0}</div>", System.Net.WebUtility.HtmlEncode(topProvNombre)))
+        sb.AppendLine(String.Format("              <div style=""font-size: 11px; color: #475569; margin-top: 2px;"">{0} partidas ({1}%)</div>", topProvCount, topProvPct))
+        sb.AppendLine("            </td>")
+        ' Tarjeta 4
+        sb.AppendLine("            <td style=""width: 25%; background-color: #f1f5f9; border: 1px solid #cbd5e1; border-radius: 6px; padding: 12px; vertical-align: top;"">")
+        sb.AppendLine("              <div style=""font-size: 11px; color: #64748b; text-transform: uppercase; font-weight: 600;"">Antigüedad Máxima</div>")
+        sb.AppendLine(String.Format("              <div style=""font-size: 20px; font-weight: 800; color: {0}; margin-top: 4px;"">{1} días</div>", If(maxDiasAntig >= 10, "#b91c1c", "#0f172a"), maxDiasAntig))
+        sb.AppendLine(String.Format("              <div style=""font-size: 11px; color: #475569; margin-top: 2px;"">{0}</div>", If(Not String.IsNullOrWhiteSpace(fechaMasAntiguaStr), "Desde " & fechaMasAntiguaStr, "Sin fecha registrada")))
+        sb.AppendLine("            </td>")
+        sb.AppendLine("          </tr>")
+        sb.AppendLine("        </table>")
+
+        ' Hallazgos Clave de Concentración y Distribución
+        sb.AppendLine("        <div style=""margin-bottom: 18px;"">")
+        sb.AppendLine("          <div style=""font-size: 13px; font-weight: 700; color: #0f172a; margin-bottom: 8px;"">&#128269; CONCENTRACIONES Y TENDENCIAS CLAVE</div>")
+        sb.AppendLine("          <ul style=""margin: 0; padding-left: 18px; font-size: 12px; color: #334155; line-height: 1.6;"">")
+
+        ' Viñeta 1: Distribución por clasificación
+        Dim resumenClasifStr As String = String.Join(", ", listClasif.Select(Function(c) String.Format("{0}: {1} ({2}%)", System.Net.WebUtility.HtmlEncode(c.Key), c.Value, Math.Round((CDbl(c.Value) / CDbl(totalPartidas)) * 100.0, 1))))
+        sb.AppendLine(String.Format("            <li><strong>Distribución por Línea:</strong> {0}.</li>", resumenClasifStr))
+
+        ' Viñeta 2: Proyectos con mayor volumen
+        Dim topPryDetalle As String = String.Join(", ", listPry.Take(3).Select(Function(p) String.Format("{0} ({1} partidas, {2}%)", System.Net.WebUtility.HtmlEncode(p.Key), p.Value.Item2, Math.Round((CDbl(p.Value.Item2) / CDbl(totalPartidas)) * 100.0, 1))))
+        sb.AppendLine(String.Format("            <li><strong>Proyectos con Mayor Carga:</strong> {0}.</li>", topPryDetalle))
+
+        ' Viñeta 3: Solicitudes críticas en volumen
+        Dim topSolsDetalle As String = String.Join(", ", listSolsVol.Take(3).Select(Function(s) String.Format("{0} ({1} partidas - {2})", System.Net.WebUtility.HtmlEncode(s.Value.Item1), s.Value.Item4, System.Net.WebUtility.HtmlEncode(s.Value.Item2))))
+        sb.AppendLine(String.Format("            <li><strong>Solicitudes con Mayor Número de Partidas:</strong> {0}.</li>", topSolsDetalle))
+
+        ' Viñeta 4: Antigüedad
+        If maxDiasAntig > 0 Then
+            sb.AppendLine(String.Format("            <li><strong>Antigüedad Crítica:</strong> La solicitud más rezagada es <strong>{0}</strong> ({1} días de espera desde el {2}). {3}</li>",
+                                        System.Net.WebUtility.HtmlEncode(solMasAntiguaFolio), maxDiasAntig, fechaMasAntiguaStr,
+                                        If(solsMas10Dias > 1, String.Format("Existen {0} solicitudes con 10 o más días sin cotizar.", solsMas10Dias), "")))
+        End If
+
+        sb.AppendLine("          </ul>")
+        sb.AppendLine("        </div>")
+
+        ' Situaciones Relevantes o Excepcionales Detectadas
+        Dim alertas As New List(Of String)()
+        If sinProvCount > 0 Then
+            alertas.Add(String.Format("<strong>Asignación Pendiente:</strong> Se detectaron {0} partida(s) con 'PROVEEDOR NO ASIGNADO'. No podrán ser cotizadas por el proveedor hasta asignar formalmente el contacto.", sinProvCount))
+        End If
+        If topPryPct >= 50.0 Then
+            alertas.Add(String.Format("<strong>Alta Concentración en Proyecto:</strong> El proyecto <strong>{0}</strong> concentra el {1}% de todas las partidas pendientes ({2} partidas). Cualquier demora aquí impactará significativamente los tiempos de entrega.", System.Net.WebUtility.HtmlEncode(topPryId), topPryPct, topPryCount))
+        End If
+        If topProvPct >= 70.0 AndAlso Not topProvNombre.Equals("PROVEEDOR NO ASIGNADO", StringComparison.OrdinalIgnoreCase) Then
+            alertas.Add(String.Format("<strong>Concentración en Proveedor:</strong> El proveedor <strong>{0}</strong> acumula el {1}% de los requerimientos ({2} partidas). Se recomienda una sesión de seguimiento directo.", System.Net.WebUtility.HtmlEncode(topProvNombre), topProvPct, topProvCount))
+        End If
+        If partidasSinNP > 0 Then
+            alertas.Add(String.Format("<strong>Falta de Número de Parte:</strong> {0} partida(s) ({1}%) no cuentan con número de parte registrado en el sistema, dependiendo exclusivamente de la descripción del proveedor.", partidasSinNP, Math.Round((CDbl(partidasSinNP) / CDbl(totalPartidas)) * 100.0, 1)))
+        End If
+        If solsMas10Dias > 0 Then
+            alertas.Add(String.Format("<strong>Tiempo de Espera Prolongado:</strong> {0} solicitud(es) superan los 10 días de haber sido emitidas sin recibir respuesta formal de precios.", solsMas10Dias))
+        End If
+
+        If alertas.Count > 0 Then
+            sb.AppendLine("        <div style=""background-color: #fffbeb; border: 1px solid #fef3c7; border-left: 4px solid #f59e0b; border-radius: 4px; padding: 12px 16px; margin-bottom: 18px;"">")
+            sb.AppendLine("          <div style=""font-size: 12px; font-weight: 700; color: #b45309; margin-bottom: 6px;"">&#9888; SITUACIONES RELEVANTES Y ALERTAS DETECTADAS:</div>")
+            sb.AppendLine("          <ul style=""margin: 0; padding-left: 16px; font-size: 12px; color: #92400e; line-height: 1.5;"">")
+            For Each al In alertas
+                sb.AppendLine(String.Format("            <li>{0}</li>", al))
+            Next
+            sb.AppendLine("          </ul>")
+            sb.AppendLine("        </div>")
+        End If
+
+        ' Recomendaciones Concretas para Personal de Compras
+        sb.AppendLine("        <div style=""background-color: #f0fdf4; border: 1px solid #bbf7d0; border-left: 4px solid #16a34a; border-radius: 4px; padding: 12px 16px;"">")
+        sb.AppendLine("          <div style=""font-size: 12px; font-weight: 700; color: #166534; margin-bottom: 6px;"">&#9989; PRIORIDADES DE ATENCIÓN Y RECOMENDACIONES DE COMPRAS:</div>")
+        sb.AppendLine("          <ol style=""margin: 0; padding-left: 18px; font-size: 12px; color: #14532d; line-height: 1.6;"">")
+
+        ' Recomendación 1: Solicitud con mayor volumen
+        sb.AppendLine(String.Format("            <li><strong>Gestionar con prioridad la solicitud {0}</strong> ({1}): Agrupa {2} partidas pendientes ({3}% del total). Su cotización resolverá la mayor parte del requerimiento actual.</li>",
+                                    System.Net.WebUtility.HtmlEncode(topSolItem.Item1), System.Net.WebUtility.HtmlEncode(topSolItem.Item2), topSolItem.Item4, Math.Round((CDbl(topSolItem.Item4) / CDbl(totalPartidas)) * 100.0, 1)))
+
+        ' Recomendación 2: Solicitud más antigua (si es distinta a la de mayor volumen)
+        If maxDiasAntig > 0 AndAlso Not solMasAntiguaFolio.Equals(topSolItem.Item1, StringComparison.OrdinalIgnoreCase) Then
+            sb.AppendLine(String.Format("            <li><strong>Dar seguimiento por antigüedad a la solicitud {0}</strong>: Registra {1} días en espera desde el {2}. Se aconseja contactar al proveedor para evitar vencimiento en la oferta comercial al cliente.</li>",
+                                        System.Net.WebUtility.HtmlEncode(solMasAntiguaFolio), maxDiasAntig, fechaMasAntiguaStr))
+        End If
+
+        ' Recomendación 3: Proveedor no asignado si existe
+        If sinProvCount > 0 Then
+            sb.AppendLine("            <li><strong>Asignar proveedor formal a las solicitudes pendientes</strong>: Existen partidas huérfanas de proveedor que requieren asignación en el catálogo para detonar el proceso de cotización.</li>")
+        End If
+
+        ' Recomendación 4: Proyecto principal
+        If topPryPct >= 40.0 Then
+            sb.AppendLine(String.Format("            <li><strong>Focalizar esfuerzo en el proyecto {0}</strong> ({1}): Representa {2} de las {3} partidas pendientes en compras.</li>",
+                                        System.Net.WebUtility.HtmlEncode(topPryId), System.Net.WebUtility.HtmlEncode(topPryTitulo), topPryCount, totalPartidas))
+        End If
+
+        sb.AppendLine("          </ol>")
+        sb.AppendLine("        </div>")
+
+        sb.AppendLine("      </div>")
+        sb.AppendLine("    </div>")
+
+        Return sb.ToString()
+    End Function
+
+    ''' <summary>
     ''' Construye el cuerpo del correo en HTML jerárquico:
-    ''' Clasificación de Proyecto -> Solicitud de Cotización -> Partidas Pendientes
+    ''' Resumen Ejecutivo -> Clasificación de Proyecto -> Solicitud de Cotización -> Partidas Pendientes
     ''' </summary>
     Private Function GenerarHtmlCotizacionesPendientes(ByVal tipoNotificacion As String, ByVal dt As DataTable, ByVal frecuenciaDias As Integer) As String
         Dim sb As New System.Text.StringBuilder()
@@ -3599,6 +3875,11 @@ intenta_otravz:
         sb.AppendLine("  </div>")
 
         sb.AppendLine("  <div class=""content"">")
+
+        ' Generar e insertar el Análisis Ejecutivo antes del detalle
+        sb.Append(GenerarResumenEjecutivoHtml(tipoNotificacion, dt, totalSolicitudes.Count))
+
+        sb.AppendLine("    <div style=""margin-top: 10px; margin-bottom: 20px; font-size: 15px; font-weight: 700; color: #0f172a; border-bottom: 2px solid #cbd5e1; padding-bottom: 8px;"">&#128203; DETALLE DE SOLICITUDES Y PARTIDAS PENDIENTES</div>")
 
         ' Nivel 1: Clasificación de Proyecto
         For Each clasif In clasificaciones
