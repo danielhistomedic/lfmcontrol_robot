@@ -4547,6 +4547,35 @@ intenta_otravz:
             Return
         End If
 
+        ' Regla Especial: Estatus 7 - ORDEN COMPRA PROVEEDOR (PEDIDO ELABORADO)
+        ' El semáforo es exclusivamente VERDE o ROJO según la fecha compromiso:
+        ' - VERDE si la fecha actual es antes de la fecha compromiso.
+        ' - ROJO si la fecha actual es igual o mayor a la fecha compromiso.
+        If item.EstatusId = 7 Then
+            If item.FechaCompromiso.HasValue Then
+                If DateTime.Now.Date < item.FechaCompromiso.Value.Date Then
+                    item.Semaforo = "VERDE"
+                    item.MotivoPrioridad = String.Format("Entrega de proveedor en tiempo (Compromiso: {0:dd/MM/yy})", item.FechaCompromiso.Value)
+                    item.IndicadorRiesgo = "NORMAL - En Plazo"
+                Else
+                    item.Semaforo = "ROJO"
+                    If DateTime.Now.Date = item.FechaCompromiso.Value.Date Then
+                        item.MotivoPrioridad = String.Format("Fecha compromiso ({0}) vence HOY", item.TipoFechaCompromiso)
+                        item.IndicadorRiesgo = "CRÍTICO - Compromiso Vence Hoy"
+                    Else
+                        Dim diasVencidos As Integer = CInt(Math.Floor((DateTime.Now.Date - item.FechaCompromiso.Value.Date).TotalDays))
+                        item.MotivoPrioridad = String.Format("Fecha compromiso ({0}) vencida hace {1} día(s)", item.TipoFechaCompromiso, diasVencidos)
+                        item.IndicadorRiesgo = "CRÍTICO - Compromiso Vencido"
+                    End If
+                End If
+            Else
+                item.Semaforo = "VERDE"
+                item.MotivoPrioridad = "Orden de compra colocada a proveedor en proceso"
+                item.IndicadorRiesgo = "NORMAL"
+            End If
+            Return
+        End If
+
         ' 1. Regla Crítica: Fecha Compromiso Vencida
         If item.FechaCompromiso.HasValue AndAlso item.DiasParaCompromiso.HasValue AndAlso item.DiasParaCompromiso.Value < 0 Then
             item.Semaforo = "ROJO"
