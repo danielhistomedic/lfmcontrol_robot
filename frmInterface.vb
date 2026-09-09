@@ -453,7 +453,7 @@ Public Class frmInterface
             ' Notificaciones Automáticas a Compras (FLOWserve y DIVERSOS)
             ' ======================================
             Try
-                If Not _procesandoNotificaciones AndAlso (DateTime.Now.Subtract(_ultimoChequeoNotificaciones).TotalMinutes >= 15) Then
+                If Not _procesandoNotificaciones AndAlso (DateTime.Now.Subtract(_ultimoChequeoNotificaciones).TotalMinutes >= 1) Then
                     _ultimoChequeoNotificaciones = DateTime.Now
                     Me.NotificarCotizacionesPendientesFlowserve()
                     Me.NotificarCotizacionesPendientesDiversos()
@@ -3247,7 +3247,7 @@ intenta_otravz:
 
     Private Sub ExportarAdjuntosAlmacen()
 
-         Try
+        Try
             Dim tablas() As String = {
                 "tb_recibos_compdigitales"
             }
@@ -3381,10 +3381,18 @@ intenta_otravz:
                                                           ByVal clasificacionesIds As Integer())
         If _procesandoNotificaciones Then Return
 
+        ' 0. Validar que la hora actual sea a partir de las 8:30 AM
+        Dim horaProgramada As New TimeSpan(8, 30, 0)
+        If DateTime.Now.TimeOfDay < horaProgramada Then
+            ' Aún no son las 8:30 AM del día actual, esperar a la hora programada
+            Return
+        End If
+
         _procesandoNotificaciones = True
         Try
-            If cx_MySQL_local.State = ConnectionState.Closed Then
+            If cx_MySQL_local.State <> ConnectionState.Open Then
                 Try
+                    If cx_MySQL_local.State = ConnectionState.Broken Then cx_MySQL_local.Close()
                     cx_MySQL_local.Open()
                 Catch exConn As Exception
                     AgregarLog(500, String.Format("[{0}] No se pudo conectar a la BD local: {1}", tipoNotificacion, exConn.Message))
@@ -3435,6 +3443,12 @@ intenta_otravz:
             End If
 
             If fechaUltimaNotif.HasValue Then
+                ' A. Si ya fue enviada hoy, no volver a enviar en el mismo día
+                If fechaUltimaNotif.Value.Date = DateTime.Now.Date Then
+                    Return
+                End If
+
+                ' B. Validar si ya transcurrieron los días requeridos por la frecuencia configurada
                 Dim diasTranscurridos As Integer = CInt(Math.Floor((DateTime.Now.Date - fechaUltimaNotif.Value.Date).TotalDays))
                 If diasTranscurridos < frecuenciaDias Then
                     ' Aún no transcurren los días requeridos por la frecuencia
@@ -3465,10 +3479,11 @@ intenta_otravz:
                 "  v.id AS venta_id, " & _
                 "  COALESCE(v.proyecto_id, '') AS proyecto_id, " & _
                 "  COALESCE(v.titulo, '') AS proyecto_titulo, " & _
+                "  COALESCE(cli.nombre_comercial, cli.razon_social, '') AS cliente_nombre, " & _
                 "  COALESCE(v.cliente_final, '') AS cliente_final, " & _
                 "  COALESCE(p.cDatGenRazonSocial, p.cDatGenNombreAbreviado, 'PROVEEDOR NO ASIGNADO') AS proveedor_nombre, " & _
                 "  cd.id AS detalle_id, " & _
-                "  COALESCE(cd.venta_detalle_id_partida, cd.id) AS partida_num, " & _
+                "  CAST(COALESCE(NULLIF(vd.codigo_partida, ''), cd.venta_detalle_id_partida, cd.id) AS CHAR) AS partida_num, " & _
                 "  COALESCE(cd.descripcion_proveedor, '') AS descripcion_proveedor, " & _
                 "  COALESCE(cd.descripcion_adicional, '') AS descripcion_adicional, " & _
                 "  COALESCE(cd.cantidad, 0) AS cantidad, " & _
@@ -3476,11 +3491,12 @@ intenta_otravz:
                 "  COALESCE(cd.codigo_proveedor, '') AS codigo_proveedor, " & _
                 "  COALESCE(cd.num_parte, '') AS num_parte, " & _
                 "  COALESCE(cd.ccvematerial, '') AS ccvematerial, " & _
-                "  COALESCE(cd.tiempo_entrega, '') AS tiempo_entrega, " & _
                 "  cd.precio_unitario " & _
                 "FROM tb_compras_cotizaciones c " & _
                 "INNER JOIN tb_compras_cotizaciones_detalle cd ON c.id = cd.cotizacion_id " & _
                 "INNER JOIN tb_ventas v ON c.venta_id = v.id " & _
+                "LEFT JOIN cat_clientes cli ON v.cliente_id = cli.id " & _
+                "LEFT JOIN tb_ventas_detalle vd ON cd.venta_detalle_id_partida = vd.id " & _
                 "LEFT JOIN cat_clasificacion_proyectos cp ON v.clasificacion_proyecto_id = cp.id " & _
                 "LEFT JOIN tb_proveedores p ON c.proveedor_id = p.icveProveedor " & _
                 "WHERE c.enviado = 0 and c.omitir_informe = 0 " & _
@@ -3624,12 +3640,7 @@ intenta_otravz:
 
         ' F. Detección de Situaciones Relevantes
         Dim sinProvCount As Integer = If(dicProvPartidas.ContainsKey("PROVEEDOR NO ASIGNADO"), dicProvPartidas("PROVEEDOR NO ASIGNADO"), 0)
-        Dim partidasSinNP As Integer = 0
-        For Each r As DataRow In dt.Rows
-            If IsDBNull(r("num_parte")) OrElse String.IsNullOrWhiteSpace(r("num_parte").ToString()) Then
-                partidasSinNP += 1
-            End If
-        Next
+
         Dim solsMas10Dias As Integer = 0
         For Each s In dicSolsPartidas.Values
             If s.Item3.HasValue AndAlso (DateTime.Now.Date - s.Item3.Value.Date).TotalDays >= 10 Then
@@ -3644,11 +3655,11 @@ intenta_otravz:
         sb.AppendLine("    <div style=""background-color: #ffffff; border: 1px solid #94a3b8; border-left: 6px solid #0284c7; border-radius: 8px; margin-bottom: 28px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.07); overflow: hidden;"">")
 
         ' Encabezado de la tarjeta ejecutiva
-        sb.AppendLine("      <div style=""background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%); padding: 16px 20px; border-bottom: 1px solid #e2e8f0;"">")
+        sb.AppendLine("      <div style=""background-color: #f8fafc; background-image: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%); padding: 16px 20px; border-bottom: 1px solid #e2e8f0;"">")
         sb.AppendLine("        <table style=""width: 100%; border-collapse: collapse;"">")
         sb.AppendLine("          <tr>")
         sb.AppendLine("            <td>")
-        sb.AppendLine("              <div style=""font-size: 15px; font-weight: 800; color: #0f172a; text-transform: uppercase; letter-spacing: 0.5px;"">&#128202; ANÁLISIS EJECUTIVO DE COMPRAS</div>")
+        sb.AppendLine("              <div style=""font-size: 15px; font-weight: 800; color: #0f172a; text-transform: uppercase; letter-spacing: 0.5px;"">&#128202; ANÁLISIS EJECUTIVO</div>")
         sb.AppendLine("              <div style=""font-size: 12px; color: #64748b; margin-top: 2px;"">Diagnóstico automático y recomendaciones estratégicas orientadas a la toma de decisiones</div>")
         sb.AppendLine("            </td>")
         sb.AppendLine(String.Format("            <td style=""text-align: right; font-size: 11px; color: #475569;"">Periodo: <strong>{0}</strong></td>", DateTime.Now.ToString("dd/MM/yyyy")))
@@ -3657,32 +3668,6 @@ intenta_otravz:
         sb.AppendLine("      </div>")
 
         sb.AppendLine("      <div style=""padding: 20px;"">")
-
-        ' Síntesis Narrativa Ejecutiva
-        sb.AppendLine("        <div style=""background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 14px 18px; margin-bottom: 18px; font-size: 13px; line-height: 1.6; color: #1e293b;"">")
-        sb.AppendFormat("          Se identificaron <strong>{0} solicitudes</strong> con un total de <strong>{1} partidas</strong> pendientes de cotización para {2}. ",
-                        totalSolicitudesCount, totalPartidas, System.Net.WebUtility.HtmlEncode(tipoNotificacion))
-
-        sb.AppendFormat("La mayor concentración por línea corresponde a <strong>{0}</strong>, representando el <strong>{1}%</strong> del total ({2} partidas). ",
-                        System.Net.WebUtility.HtmlEncode(topClasifNombre), topClasifPct, topClasifCount)
-
-        If topProvNombre.Equals("PROVEEDOR NO ASIGNADO", StringComparison.OrdinalIgnoreCase) Then
-            sb.AppendFormat("Se identificó que <strong>{0} partidas ({1}%)</strong> aún no cuentan con proveedor asignado, requiriendo atención inmediata. ",
-                            topProvCount, topProvPct)
-        Else
-            sb.AppendFormat("El proveedor <strong>{0}</strong> concentra el mayor volumen con <strong>{1} partidas ({2}%)</strong> en {3} solicitud(es). ",
-                            System.Net.WebUtility.HtmlEncode(topProvNombre), topProvCount, topProvPct, topProvSolsCount)
-        End If
-
-        If maxDiasAntig > 0 Then
-            sb.AppendFormat("La solicitud con mayor tiempo de espera es <strong>{0}</strong> emitida el {1} (<strong>{2} días</strong> sin cotizar). ",
-                            System.Net.WebUtility.HtmlEncode(solMasAntiguaFolio), fechaMasAntiguaStr, maxDiasAntig)
-        End If
-
-        sb.AppendFormat("Se sugiere dar máxima prioridad a la solicitud <strong>{0}</strong> por concentrar el mayor volumen ({1} partidas).",
-                        System.Net.WebUtility.HtmlEncode(topSolItem.Item1), topSolItem.Item4)
-
-        sb.AppendLine("        </div>")
 
         ' Cuadrícula de Métricas Clave (4 cajas)
         sb.AppendLine("        <table style=""width: 100%; border-collapse: separate; border-spacing: 10px; margin-left: -10px; margin-right: -10px; margin-bottom: 18px;"">")
@@ -3701,7 +3686,7 @@ intenta_otravz:
         sb.AppendLine("            </td>")
         ' Tarjeta 3
         sb.AppendLine("            <td style=""width: 25%; background-color: #f1f5f9; border: 1px solid #cbd5e1; border-radius: 6px; padding: 12px; vertical-align: top;"">")
-        sb.AppendLine("              <div style=""font-size: 11px; color: #64748b; text-transform: uppercase; font-weight: 600;"">Proveedor Líder</div>")
+        sb.AppendLine("              <div style=""font-size: 11px; color: #64748b; text-transform: uppercase; font-weight: 600;"">Proveedor</div>")
         sb.AppendLine(String.Format("              <div style=""font-size: 14px; font-weight: 800; color: #0f172a; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"">{0}</div>", System.Net.WebUtility.HtmlEncode(topProvNombre)))
         sb.AppendLine(String.Format("              <div style=""font-size: 11px; color: #475569; margin-top: 2px;"">{0} partidas ({1}%)</div>", topProvCount, topProvPct))
         sb.AppendLine("            </td>")
@@ -3741,34 +3726,6 @@ intenta_otravz:
         sb.AppendLine("          </ul>")
         sb.AppendLine("        </div>")
 
-        ' Situaciones Relevantes o Excepcionales Detectadas
-        Dim alertas As New List(Of String)()
-        If sinProvCount > 0 Then
-            alertas.Add(String.Format("<strong>Asignación Pendiente:</strong> Se detectaron {0} partida(s) con 'PROVEEDOR NO ASIGNADO'. No podrán ser cotizadas por el proveedor hasta asignar formalmente el contacto.", sinProvCount))
-        End If
-        If topPryPct >= 50.0 Then
-            alertas.Add(String.Format("<strong>Alta Concentración en Proyecto:</strong> El proyecto <strong>{0}</strong> concentra el {1}% de todas las partidas pendientes ({2} partidas). Cualquier demora aquí impactará significativamente los tiempos de entrega.", System.Net.WebUtility.HtmlEncode(topPryId), topPryPct, topPryCount))
-        End If
-        If topProvPct >= 70.0 AndAlso Not topProvNombre.Equals("PROVEEDOR NO ASIGNADO", StringComparison.OrdinalIgnoreCase) Then
-            alertas.Add(String.Format("<strong>Concentración en Proveedor:</strong> El proveedor <strong>{0}</strong> acumula el {1}% de los requerimientos ({2} partidas). Se recomienda una sesión de seguimiento directo.", System.Net.WebUtility.HtmlEncode(topProvNombre), topProvPct, topProvCount))
-        End If
-        If partidasSinNP > 0 Then
-            alertas.Add(String.Format("<strong>Falta de Número de Parte:</strong> {0} partida(s) ({1}%) no cuentan con número de parte registrado en el sistema, dependiendo exclusivamente de la descripción del proveedor.", partidasSinNP, Math.Round((CDbl(partidasSinNP) / CDbl(totalPartidas)) * 100.0, 1)))
-        End If
-        If solsMas10Dias > 0 Then
-            alertas.Add(String.Format("<strong>Tiempo de Espera Prolongado:</strong> {0} solicitud(es) superan los 10 días de haber sido emitidas sin recibir respuesta formal de precios.", solsMas10Dias))
-        End If
-
-        If alertas.Count > 0 Then
-            sb.AppendLine("        <div style=""background-color: #fffbeb; border: 1px solid #fef3c7; border-left: 4px solid #f59e0b; border-radius: 4px; padding: 12px 16px; margin-bottom: 18px;"">")
-            sb.AppendLine("          <div style=""font-size: 12px; font-weight: 700; color: #b45309; margin-bottom: 6px;"">&#9888; SITUACIONES RELEVANTES Y ALERTAS DETECTADAS:</div>")
-            sb.AppendLine("          <ul style=""margin: 0; padding-left: 16px; font-size: 12px; color: #92400e; line-height: 1.5;"">")
-            For Each al In alertas
-                sb.AppendLine(String.Format("            <li>{0}</li>", al))
-            Next
-            sb.AppendLine("          </ul>")
-            sb.AppendLine("        </div>")
-        End If
 
         ' Recomendaciones Concretas para Personal de Compras
         sb.AppendLine("        <div style=""background-color: #f0fdf4; border: 1px solid #bbf7d0; border-left: 4px solid #16a34a; border-radius: 4px; padding: 12px 16px;"">")
@@ -3835,11 +3792,11 @@ intenta_otravz:
         sb.AppendLine("<style type=""text/css"">")
         sb.AppendLine("  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f1f5f9; margin: 0; padding: 20px; color: #1e293b; }")
         sb.AppendLine("  .container { max-width: 900px; margin: 0 auto; background-color: #ffffff; border: 1px solid #cbd5e1; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); }")
-        sb.AppendLine("  .header { background: linear-gradient(135deg, #0f172a 0%, #1e3a8a 100%); color: #ffffff; padding: 24px 30px; text-align: left; }")
-        sb.AppendLine("  .header h1 { margin: 0 0 6px 0; font-size: 20px; font-weight: 700; letter-spacing: -0.5px; }")
+        sb.AppendLine("  .header { background-color: #1e3a8a; background-image: linear-gradient(135deg, #0f172a 0%, #1e3a8a 100%); color: #ffffff; padding: 24px 30px; text-align: left; }")
+        sb.AppendLine("  .header h1 { margin: 0 0 6px 0; font-size: 20px; font-weight: 700; letter-spacing: -0.5px; color: #ffffff; }")
         sb.AppendLine("  .header p { margin: 0; font-size: 13px; color: #cbd5e1; }")
-        sb.AppendLine("  .stats-bar { display: table; width: 100%; background-color: #f8fafc; border-bottom: 1px solid #e2e8f0; padding: 12px 30px; box-sizing: border-box; }")
-        sb.AppendLine("  .stat-item { display: table-cell; vertical-align: middle; font-size: 12px; color: #475569; }")
+        sb.AppendLine("  .stats-bar { width: 100%; background-color: #f8fafc; border-bottom: 1px solid #e2e8f0; }")
+        sb.AppendLine("  .stat-item { font-size: 12px; color: #475569; }")
         sb.AppendLine("  .stat-badge { display: inline-block; background-color: #1e3a8a; color: #ffffff; font-weight: bold; border-radius: 12px; padding: 2px 8px; font-size: 11px; margin-left: 4px; }")
         sb.AppendLine("  .content { padding: 25px 30px; }")
         sb.AppendLine("  .clasif-section { margin-bottom: 30px; }")
@@ -3860,20 +3817,26 @@ intenta_otravz:
         sb.AppendLine("</head>")
         sb.AppendLine("<body>")
         sb.AppendLine("<div class=""container"">")
-
-        ' Encabezado principal
-        sb.AppendLine("  <div class=""header"">")
-        sb.AppendLine(String.Format("    <h1>Notificación de Cotizaciones Pendientes - {0}</h1>", System.Net.WebUtility.HtmlEncode(tipoNotificacion)))
-        sb.AppendLine(String.Format("    <p>Partidas pendientes de cotizar registradas en solicitudes a proveedores &bull; Generado el {0}</p>", DateTime.Now.ToString("dd/MM/yyyy HH:mm:ss")))
-        sb.AppendLine("  </div>")
-
-        ' Barra de estadísticas
-        sb.AppendLine("  <div class=""stats-bar"">")
-        sb.AppendLine(String.Format("    <div class=""stat-item"">Solicitudes con pendientes: <span class=""stat-badge"">{0}</span></div>", totalSolicitudes.Count))
-        sb.AppendLine(String.Format("    <div class=""stat-item"">Total Partidas Pendientes: <span class=""stat-badge"">{0}</span></div>", dt.Rows.Count))
-        sb.AppendLine(String.Format("    <div class=""stat-item"" style=""text-align: right;"">Frecuencia programada: <strong>Cada {0} día(s)</strong></div>", frecuenciaDias))
-        sb.AppendLine("  </div>")
-
+        sb.AppendLine("")
+        sb.AppendLine("  <!-- Encabezado principal con soporte para Outlook y Webmail -->")
+        sb.AppendLine("  <table role=""presentation"" border=""0"" cellpadding=""0"" cellspacing=""0"" width=""100%"" bgcolor=""#1e3a8a"" class=""header"" style=""width: 100%; border-collapse: collapse; background-color: #1e3a8a; background-image: linear-gradient(135deg, #0f172a 0%, #1e3a8a 100%);"">")
+        sb.AppendLine("    <tr>")
+        sb.AppendLine("      <td style=""padding: 24px 30px; text-align: left;"">")
+        sb.AppendLine(String.Format("        <h1 style=""margin: 0 0 6px 0; font-size: 20px; font-weight: 700; letter-spacing: -0.5px; color: #ffffff; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;"">Notificación de Cotizaciones Pendientes - {0}</h1>", System.Net.WebUtility.HtmlEncode(tipoNotificacion)))
+        sb.AppendLine(String.Format("        <p style=""margin: 0; font-size: 13px; color: #cbd5e1; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;"">Partidas pendientes de cotizar registradas en solicitudes a proveedores &bull; Generado el {0}</p>", DateTime.Now.ToString("dd/MM/yyyy HH:mm:ss")))
+        sb.AppendLine("      </td>")
+        sb.AppendLine("    </tr>")
+        sb.AppendLine("  </table>")
+        sb.AppendLine("")
+        sb.AppendLine("  <!-- Barra de estadísticas -->")
+        sb.AppendLine("  <table role=""presentation"" border=""0"" cellpadding=""0"" cellspacing=""0"" width=""100%"" bgcolor=""#f8fafc"" class=""stats-bar"" style=""width: 100%; border-collapse: collapse; background-color: #f8fafc; border-bottom: 1px solid #e2e8f0;"">")
+        sb.AppendLine("    <tr>")
+        sb.AppendLine(String.Format("      <td style=""padding: 12px 30px; font-size: 12px; color: #475569; vertical-align: middle; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;"">Solicitudes con pendientes: <span class=""stat-badge"" style=""display: inline-block; background-color: #1e3a8a; color: #ffffff; font-weight: bold; border-radius: 12px; padding: 2px 8px; font-size: 11px; margin-left: 4px;"">{0}</span></td>", totalSolicitudes.Count))
+        sb.AppendLine(String.Format("      <td style=""padding: 12px 10px; font-size: 12px; color: #475569; vertical-align: middle; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;"">Total Partidas Pendientes: <span class=""stat-badge"" style=""display: inline-block; background-color: #1e3a8a; color: #ffffff; font-weight: bold; border-radius: 12px; padding: 2px 8px; font-size: 11px; margin-left: 4px;"">{0}</span></td>", dt.Rows.Count))
+        sb.AppendLine(String.Format("      <td style=""padding: 12px 30px; font-size: 12px; color: #475569; vertical-align: middle; text-align: right; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;"">Frecuencia programada: <strong style=""color: #1e293b;"">Cada {0} día(s)</strong></td>", frecuenciaDias))
+        sb.AppendLine("    </tr>")
+        sb.AppendLine("  </table>")
+        sb.AppendLine("")
         sb.AppendLine("  <div class=""content"">")
 
         ' Generar e insertar el Análisis Ejecutivo antes del detalle
@@ -3908,9 +3871,9 @@ intenta_otravz:
                 Dim folioCot As String = If(Not IsDBNull(primerRow("folio_cotizacion")), primerRow("folio_cotizacion").ToString().Trim(), "")
                 Dim fchSolStr As String = If(Not IsDBNull(primerRow("fecha_solicitud")), Format(primerRow("fecha_solicitud"), "dd/MM/yyyy"), "-")
                 Dim pryId As String = If(Not IsDBNull(primerRow("proyecto_id")), primerRow("proyecto_id").ToString().Trim(), "")
-                Dim pryTit As String = If(Not IsDBNull(primerRow("proyecto_titulo")), primerRow("proyecto_titulo").ToString().Trim(), "")
                 Dim provNom As String = If(Not IsDBNull(primerRow("proveedor_nombre")), primerRow("proveedor_nombre").ToString().Trim(), "PROVEEDOR NO ASIGNADO")
                 Dim oportFlow As String = If(Not IsDBNull(primerRow("oportunidad_flowserve")), primerRow("oportunidad_flowserve").ToString().Trim(), "")
+                Dim clieNom As String = If(Not IsDBNull(primerRow("cliente_nombre")), primerRow("cliente_nombre").ToString().Trim(), "")
                 Dim clieFinal As String = If(Not IsDBNull(primerRow("cliente_final")), primerRow("cliente_final").ToString().Trim(), "")
 
                 sb.AppendLine("      <div class=""solicitud-card"">")
@@ -3921,11 +3884,13 @@ intenta_otravz:
                                             System.Net.WebUtility.HtmlEncode(provNom)))
 
                 sb.AppendLine("          <div class=""sol-meta"">")
-                sb.AppendLine(String.Format("            <strong>Proyecto:</strong> {0} - {1} &bull; <strong>Fecha Solicitud:</strong> {2}",
+                sb.AppendLine(String.Format("            <strong>Proyecto:</strong> {0} &bull; <strong>Fecha Solicitud:</strong> {1}",
                                             System.Net.WebUtility.HtmlEncode(pryId),
-                                            System.Net.WebUtility.HtmlEncode(pryTit),
                                             System.Net.WebUtility.HtmlEncode(fchSolStr)))
 
+                If Not String.IsNullOrWhiteSpace(clieNom) Then
+                    sb.AppendLine(String.Format(" &bull; <strong>Cliente:</strong> {0}", System.Net.WebUtility.HtmlEncode(clieNom)))
+                End If
                 If Not String.IsNullOrWhiteSpace(clieFinal) Then
                     sb.AppendLine(String.Format(" &bull; <strong>Cliente Final:</strong> {0}", System.Net.WebUtility.HtmlEncode(clieFinal)))
                 End If
@@ -3940,28 +3905,34 @@ intenta_otravz:
                 sb.AppendLine("        <table class=""items-table"">")
                 sb.AppendLine("          <thead>")
                 sb.AppendLine("            <tr>")
-                sb.AppendLine("              <th style=""width: 5%; text-align: center;"">#</th>")
+                sb.AppendLine("              <th style=""width: 12%; text-align: center;"">Partida</th>")
                 sb.AppendLine("              <th style=""width: 12%; text-align: center;"">Cantidad</th>")
                 sb.AppendLine("              <th style=""width: 13%;"">Cód. Prov.</th>")
                 sb.AppendLine("              <th style=""width: 15%;"">No. Parte</th>")
-                sb.AppendLine("              <th style=""width: 43%;"">Descripción / Concepto</th>")
-                sb.AppendLine("              <th style=""width: 12%; text-align: center;"">T. Entrega</th>")
+                sb.AppendLine("              <th style=""width: 48%;"">Descripción / Concepto</th>")
                 sb.AppendLine("            </tr>")
                 sb.AppendLine("          </thead>")
                 sb.AppendLine("          <tbody>")
 
                 For Each r In rowsCot
-                    Dim partidaNum As String = If(Not IsDBNull(r("partida_num")), r("partida_num").ToString(), "-")
+                    Dim partidaNum As String = "-"
+                    If Not IsDBNull(r("partida_num")) Then
+                        If TypeOf r("partida_num") Is Byte() Then
+                            partidaNum = System.Text.Encoding.UTF8.GetString(DirectCast(r("partida_num"), Byte())).Trim()
+                        Else
+                            partidaNum = r("partida_num").ToString().Trim()
+                        End If
+                        If String.IsNullOrWhiteSpace(partidaNum) Then partidaNum = "-"
+                    End If
                     Dim cantVal As Double = If(Not IsDBNull(r("cantidad")), Convert.ToDouble(r("cantidad")), 0)
                     Dim unidadStr As String = If(Not IsDBNull(r("unidad")), r("unidad").ToString().Trim(), "pza")
                     Dim codProv As String = If(Not IsDBNull(r("codigo_proveedor")), r("codigo_proveedor").ToString().Trim(), "")
                     Dim numParte As String = If(Not IsDBNull(r("num_parte")), r("num_parte").ToString().Trim(), "")
                     Dim descProv As String = If(Not IsDBNull(r("descripcion_proveedor")), r("descripcion_proveedor").ToString().Trim(), "")
                     Dim descAdic As String = If(Not IsDBNull(r("descripcion_adicional")), r("descripcion_adicional").ToString().Trim(), "")
-                    Dim tiempoEnt As String = If(Not IsDBNull(r("tiempo_entrega")), r("tiempo_entrega").ToString().Trim(), "")
 
                     sb.AppendLine("            <tr>")
-                    sb.AppendLine(String.Format("              <td style=""text-align: center; font-weight: bold; color: #475569;"">{0}</td>", System.Net.WebUtility.HtmlEncode(partidaNum)))
+                    sb.AppendLine(String.Format("              <td style=""text-align: center; font-weight: bold; color: #1e293b;"">{0}</td>", System.Net.WebUtility.HtmlEncode(partidaNum)))
                     sb.AppendLine(String.Format("              <td style=""text-align: center; font-weight: bold;"">{0:N2} {1}</td>", cantVal, System.Net.WebUtility.HtmlEncode(unidadStr)))
                     sb.AppendLine(String.Format("              <td>{0}</td>", If(Not String.IsNullOrWhiteSpace(codProv), "<span class=""tag-code"">" & System.Net.WebUtility.HtmlEncode(codProv) & "</span>", "-")))
                     sb.AppendLine(String.Format("              <td>{0}</td>", If(Not String.IsNullOrWhiteSpace(numParte), "<span class=""tag-code"">" & System.Net.WebUtility.HtmlEncode(numParte) & "</span>", "-")))
@@ -3972,8 +3943,6 @@ intenta_otravz:
                         sb.Append(String.Format("<div class=""desc-adic"">{0}</div>", System.Net.WebUtility.HtmlEncode(descAdic)))
                     End If
                     sb.AppendLine("</td>")
-
-                    sb.AppendLine(String.Format("              <td style=""text-align: center; color: #64748b;"">{0}</td>", If(Not String.IsNullOrWhiteSpace(tiempoEnt), System.Net.WebUtility.HtmlEncode(tiempoEnt), "-")))
                     sb.AppendLine("            </tr>")
                 Next
 
@@ -3989,8 +3958,8 @@ intenta_otravz:
 
         ' Pie de página institucional
         sb.AppendLine("  <div class=""footer"">")
-        sb.AppendLine("    <p style=""margin: 0 0 4px 0; font-weight: 600;"">HistoMedic LFM RPA Robot &bull; Notificación Automática de Cotizaciones</p>")
-        sb.AppendLine("    <p style=""margin: 0;"">Este mensaje fue generado automáticamente según la frecuencia programada en cat_consultorio. Por favor no responder a este correo.</p>")
+        sb.AppendLine("    <p style=""margin: 0 0 4px 0; font-weight: 600;"">LFM RPA Robot &bull; Notificación Automática de Partidas Pendientes de Cotizar. Powered by HistoMedic.</p>")
+        sb.AppendLine("    <p style=""margin: 0;"">Este mensaje fue generado automáticamente según la frecuencia programada en configuración general. Por favor no responder a este correo.</p>")
         sb.AppendLine("  </div>")
         sb.AppendLine("</div>")
         sb.AppendLine("</body>")
