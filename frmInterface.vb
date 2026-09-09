@@ -4102,6 +4102,38 @@ intenta_otravz:
         Public Property TotalCotizacionesCliente As Integer
         Public Property TotalPedidosCliente As Integer
         Public Property TotalSolicitudesProveedor As Integer
+        Public Property Activo As String = "ACTIVO"
+        Public Property MotivoCancelacion As String = ""
+        Public Property Seguimientos As New List(Of ItemSeguimientoProyecto)()
+
+        Public ReadOnly Property EsDeclinado As Boolean
+            Get
+                Return Activo.Equals("CERRADO", StringComparison.OrdinalIgnoreCase)
+            End Get
+        End Property
+
+        Public ReadOnly Property EsCancelado As Boolean
+            Get
+                Return EstatusId = 2
+            End Get
+        End Property
+
+        Public ReadOnly Property EsCanceladoODeclinado As Boolean
+            Get
+                Return EsDeclinado OrElse EsCancelado
+            End Get
+        End Property
+    End Class
+
+    ''' <summary>
+    ''' Modelo para representar cada nota de bitácora registrada en tb_ventas_seguimiento.
+    ''' </summary>
+    Public Class ItemSeguimientoProyecto
+        Public Property Id As Integer
+        Public Property Fecha As DateTime
+        Public Property UsuarioClave As String
+        Public Property UsuarioNombre As String
+        Public Property Detalle As String
     End Class
 
     ''' <summary>
@@ -4277,15 +4309,16 @@ intenta_otravz:
             "  (SELECT MAX(cc.fecha_vigencia) FROM tb_ventas_cotizacion_cliente cc WHERE cc.venta_id = v.id AND cc.activo = 1) AS fch_vigencia_cot, " & _
             "  (SELECT COUNT(*) FROM tb_ventas_cotizacion_cliente cc WHERE cc.venta_id = v.id AND cc.activo = 1) AS total_cotizaciones_cliente, " & _
             "  (SELECT COUNT(*) FROM tb_pedidos_cliente pc WHERE pc.venta_id = v.id) AS total_pedidos_cliente, " & _
-            "  (SELECT COUNT(*) FROM tb_compras_cotizaciones com WHERE com.venta_id = v.id) AS total_solicitudes_proveedor " & _
+            "  (SELECT COUNT(*) FROM tb_compras_cotizaciones com WHERE com.venta_id = v.id) AS total_solicitudes_proveedor, " & _
+            "  COALESCE(v.activo, 'ACTIVO') AS activo, " & _
+            "  COALESCE(v.motivo_cancelacion, '') AS motivo_cancelacion " & _
             "FROM tb_ventas v " & _
             "LEFT JOIN cat_clasificacion_proyectos cp ON v.clasificacion_proyecto_id = cp.id " & _
             "LEFT JOIN cat_medico m ON v.ccveusuario_vendedor = m.ccvemedico " & _
             "LEFT JOIN cat_clientes cli ON v.cliente_id = cli.id " & _
             "LEFT JOIN cat_estatus_proyecto ep ON v.estatus_proyecto_id = ep.Id " & _
             "LEFT JOIN cat_tipos_cambio tc ON v.moneda_id = tc.id " & _
-            "WHERE v.activo = 'ACTIVO' " & _
-            "  AND v.estatus_proyecto_id <= 7 " & _
+            "WHERE v.estatus_proyecto_id <= 7 " & _
             "  AND v.fecha >= '2026-08-24' " & _
             "ORDER BY cp.clasificacion, vendedor_nombre, v.id DESC;"
 
@@ -4305,6 +4338,8 @@ intenta_otravz:
             item.ClienteFinal = If(Not IsDBNull(r("cliente_final")), r("cliente_final").ToString().Trim(), "")
             item.EstatusId = If(Not IsDBNull(r("estatus_proyecto_id")), Convert.ToInt32(r("estatus_proyecto_id")), 0)
             item.EstatusNombre = If(Not IsDBNull(r("estatus_nombre")), r("estatus_nombre").ToString().Trim(), "ESTATUS DESCONOCIDO")
+            item.Activo = If(Not IsDBNull(r("activo")), r("activo").ToString().Trim(), "ACTIVO")
+            item.MotivoCancelacion = If(Not IsDBNull(r("motivo_cancelacion")), r("motivo_cancelacion").ToString().Trim(), "")
 
             ' Fechas base
             Dim fchCrea As DateTime = DateTime.Now
@@ -4386,33 +4421,41 @@ intenta_otravz:
                 item.DiasParaCompromiso = CInt(Math.Floor((item.FechaCompromiso.Value.Date - DateTime.Now.Date).TotalDays))
             End If
 
-            ' Próxima Acción Requerida y Responsable según Estatus
-            Select Case item.EstatusId
-                Case 1 ' OPORTUNIDAD DE VENTA
-                    item.ProximaAccion = "Elaborar cotización interna o enviar solicitud de cotización a compras/proveedores"
-                    item.Responsable = "Ventas (" & item.VendedorNombre & ")"
-                Case 2 ' CANCELADO
-                    item.ProximaAccion = "Proyecto cancelado / cerrado en bitácora"
-                    item.Responsable = "Ventas (" & item.VendedorNombre & ")"
-                Case 3 ' COTIZACION DE PROVEEDOR
-                    item.ProximaAccion = "Dar seguimiento a respuesta de proveedores y registrar costos en el sistema"
-                    item.Responsable = "Compras / Ventas"
-                Case 4 ' COTIZACION INTERNA ELABORADA
-                    item.ProximaAccion = "Generar y enviar formalmente la cotización de venta al cliente"
-                    item.Responsable = "Ventas (" & item.VendedorNombre & ")"
-                Case 5 ' COTIZACION CLIENTE ELABORADA
-                    item.ProximaAccion = "Seguimiento comercial con cliente para cierre de venta y recepción de OC"
-                    item.Responsable = "Ventas (" & item.VendedorNombre & ")"
-                Case 6 ' ORDEN COMPRA CLIENTE
-                    item.ProximaAccion = "Colocar Orden de Compra formal al proveedor e iniciar aprovisionamiento"
-                    item.Responsable = "Compras"
-                Case 7 ' ORDEN COMPRA PROVEEDOR
-                    item.ProximaAccion = "Monitorear entrega del proveedor y coordinar recepción e inspección en almacén"
-                    item.Responsable = "Compras / Almacén"
-                Case Else
-                    item.ProximaAccion = "Seguimiento operativo general del proyecto"
-                    item.Responsable = "Ventas / Operaciones"
-            End Select
+            ' Próxima Acción Requerida y Responsable según Estatus y Condición de Cierre
+            If item.EsDeclinado Then
+                item.ProximaAccion = "Proyecto declinado comercialmente / no procedente"
+                item.Responsable = "Ventas (" & item.VendedorNombre & ")"
+            ElseIf item.EsCancelado Then
+                item.ProximaAccion = If(Not String.IsNullOrWhiteSpace(item.MotivoCancelacion), "Cancelado: " & item.MotivoCancelacion, "Proyecto cancelado / cerrado en bitácora")
+                item.Responsable = "Ventas (" & item.VendedorNombre & ")"
+            Else
+                Select Case item.EstatusId
+                    Case 1 ' OPORTUNIDAD DE VENTA
+                        item.ProximaAccion = "Elaborar cotización interna o enviar solicitud de cotización a compras/proveedores"
+                        item.Responsable = "Ventas (" & item.VendedorNombre & ")"
+                    Case 2 ' CANCELADO
+                        item.ProximaAccion = "Proyecto cancelado / cerrado en bitácora"
+                        item.Responsable = "Ventas (" & item.VendedorNombre & ")"
+                    Case 3 ' COTIZACION DE PROVEEDOR
+                        item.ProximaAccion = "Dar seguimiento a respuesta de proveedores y registrar costos en el sistema"
+                        item.Responsable = "Compras / Ventas"
+                    Case 4 ' COTIZACION INTERNA ELABORADA
+                        item.ProximaAccion = "Generar y enviar formalmente la cotización de venta al cliente"
+                        item.Responsable = "Ventas (" & item.VendedorNombre & ")"
+                    Case 5 ' COTIZACION CLIENTE ELABORADA
+                        item.ProximaAccion = "Seguimiento comercial con cliente para cierre de venta y recepción de OC"
+                        item.Responsable = "Ventas (" & item.VendedorNombre & ")"
+                    Case 6 ' ORDEN COMPRA CLIENTE
+                        item.ProximaAccion = "Colocar Orden de Compra formal al proveedor e iniciar aprovisionamiento"
+                        item.Responsable = "Compras"
+                    Case 7 ' ORDEN COMPRA PROVEEDOR
+                        item.ProximaAccion = "Monitorear entrega del proveedor y coordinar recepción e inspección en almacén"
+                        item.Responsable = "Compras / Almacén"
+                    Case Else
+                        item.ProximaAccion = "Seguimiento operativo general del proyecto"
+                        item.Responsable = "Ventas / Operaciones"
+                End Select
+            End If
 
             ' =====================================================================
             ' Motor de Evaluación de Semáforo Automático (VERDE, AMARILLO, ROJO)
@@ -4422,6 +4465,42 @@ intenta_otravz:
             resultado.Add(item)
         Next
 
+        ' Cargar historial de seguimiento registrado en bitácora para proyectos declinados o cancelados
+        Dim proyectosConSeguimiento = resultado.Where(Function(p) p.EsCanceladoODeclinado).ToList()
+        If proyectosConSeguimiento.Count > 0 Then
+            Dim idsVenta = String.Join(",", proyectosConSeguimiento.Select(Function(p) p.VentaId.ToString()))
+            Dim sqlSeg As String = String.Format(
+                "SELECT s.id, s.venta_id, s.fchregistro, s.ccveusuario, " & _
+                "  COALESCE(TRIM(CONCAT_WS(' ', m.cnombre, m.cpriapellido, m.csegapellido)), s.ccveusuario, 'SISTEMA') AS usuario_nombre, " & _
+                "  COALESCE(s.seguimiento, '') AS seguimiento " & _
+                "FROM tb_ventas_seguimiento s " & _
+                "LEFT JOIN cat_medico m ON s.ccveusuario = m.ccvemedico " & _
+                "WHERE s.venta_id IN ({0}) " & _
+                "ORDER BY s.id ASC;", idsVenta)
+
+            Dim dtSeg As DataTable = tb_Recordset_MySQL_local(sqlSeg)
+            If dtSeg IsNot Nothing Then
+                For Each rSeg As DataRow In dtSeg.Rows
+                    Dim vId As Integer = Convert.ToInt32(rSeg("venta_id"))
+                    Dim targetProj = resultado.FirstOrDefault(Function(p) p.VentaId = vId)
+                    If targetProj IsNot Nothing Then
+                        Dim seg As New ItemSeguimientoProyecto()
+                        seg.Id = Convert.ToInt32(rSeg("id"))
+                        If Not IsDBNull(rSeg("fchregistro")) Then
+                            Dim dtFchSeg As DateTime
+                            If DateTime.TryParse(rSeg("fchregistro").ToString(), dtFchSeg) Then
+                                seg.Fecha = dtFchSeg
+                            End If
+                        End If
+                        seg.UsuarioClave = If(Not IsDBNull(rSeg("ccveusuario")), rSeg("ccveusuario").ToString().Trim(), "")
+                        seg.UsuarioNombre = If(Not IsDBNull(rSeg("usuario_nombre")), rSeg("usuario_nombre").ToString().Trim(), "SISTEMA")
+                        seg.Detalle = If(Not IsDBNull(rSeg("seguimiento")), rSeg("seguimiento").ToString().Trim(), "")
+                        targetProj.Seguimientos.Add(seg)
+                    End If
+                Next
+            End If
+        End If
+
         Return resultado
     End Function
 
@@ -4430,6 +4509,22 @@ intenta_otravz:
     ''' su indicador de riesgo y el motivo de su prioridad.
     ''' </summary>
     Private Sub EvaluarSemaforoProyecto(ByVal item As ItemProyectoInforme)
+        ' Regla Especial: Proyecto Declinado (activo = 'CERRADO')
+        If item.EsDeclinado Then
+            item.Semaforo = "ROJO"
+            item.MotivoPrioridad = "Proyecto Declinado (Cerrado)"
+            item.IndicadorRiesgo = "DECLINADO"
+            Return
+        End If
+
+        ' Regla Especial: Proyecto Cancelado (estatus = 2)
+        If item.EsCancelado Then
+            item.Semaforo = "ROJO"
+            item.MotivoPrioridad = If(Not String.IsNullOrWhiteSpace(item.MotivoCancelacion), "Cancelado: " & item.MotivoCancelacion, "Proyecto Cancelado")
+            item.IndicadorRiesgo = "CANCELADO"
+            Return
+        End If
+
         ' 1. Regla Crítica: Fecha Compromiso Vencida
         If item.FechaCompromiso.HasValue AndAlso item.DiasParaCompromiso.HasValue AndAlso item.DiasParaCompromiso.Value < 0 Then
             item.Semaforo = "ROJO"
@@ -4679,6 +4774,9 @@ intenta_otravz:
         ' 9. Detalle Completo de Proyectos (Agrupado por Clasificación -> Vendedor)
         sb.Append(GenerarDetalleProyectosHtml(proyectos))
 
+        ' 10. Apartado Exclusivo para Proyectos DECLINADOS (activo = 'CERRADO') con Seguimiento Registrado
+        sb.Append(GenerarProyectosDeclinadosHtml(proyectos))
+
         sb.AppendLine("  </div>")
 
         ' Pie de página institucional
@@ -4700,12 +4798,14 @@ intenta_otravz:
     Private Function GenerarResumenEjecutivoProyectosHtml(ByVal proyectos As List(Of ItemProyectoInforme)) As String
         Dim sb As New System.Text.StringBuilder()
 
-        Dim totalActivos As Integer = proyectos.Where(Function(p) p.EstatusId <> 2).Count()
-        Dim nuevosHoy As Integer = proyectos.Where(Function(p) p.FechaCreacion.Date = DateTime.Now.Date).Count()
-        Dim actualizadosHoy As Integer = proyectos.Where(Function(p) p.FechaUltimoMovimiento.Date = DateTime.Now.Date).Count()
-        Dim sinMovimiento As Integer = proyectos.Where(Function(p) p.DiasSinMovimiento >= 4).Count()
-        Dim cerradosGanados As Integer = proyectos.Where(Function(p) p.EstatusId = 6 OrElse p.EstatusId = 7).Count()
-        Dim canceladosPerdidos As Integer = proyectos.Where(Function(p) p.EstatusId = 2).Count()
+        Dim totalActivos As Integer = proyectos.Where(Function(p) Not p.EsCanceladoODeclinado).Count()
+        Dim nuevosHoy As Integer = proyectos.Where(Function(p) p.FechaCreacion.Date = DateTime.Now.Date AndAlso Not p.EsCanceladoODeclinado).Count()
+        Dim actualizadosHoy As Integer = proyectos.Where(Function(p) p.FechaUltimoMovimiento.Date = DateTime.Now.Date AndAlso Not p.EsCanceladoODeclinado).Count()
+        Dim sinMovimiento As Integer = proyectos.Where(Function(p) p.DiasSinMovimiento >= 4 AndAlso Not p.EsCanceladoODeclinado).Count()
+        Dim cerradosGanados As Integer = proyectos.Where(Function(p) (p.EstatusId = 6 OrElse p.EstatusId = 7) AndAlso Not p.EsCanceladoODeclinado).Count()
+        Dim canceladosDeclinados As Integer = proyectos.Where(Function(p) p.EsCanceladoODeclinado).Count()
+        Dim totalCancelados As Integer = proyectos.Where(Function(p) p.EsCancelado).Count()
+        Dim totalDeclinados As Integer = proyectos.Where(Function(p) p.EsDeclinado).Count()
 
         Dim verdesCount As Integer = proyectos.Where(Function(p) p.Semaforo = "VERDE").Count()
         Dim amarillosCount As Integer = proyectos.Where(Function(p) p.Semaforo = "AMARILLO").Count()
@@ -4725,7 +4825,7 @@ intenta_otravz:
         sb.AppendLine(String.Format("        <td style=""width: 16.6%; background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 4px; padding: 10px; text-align: center;""><div style=""font-size: 10px; color: #64748b; font-weight: 700; text-transform: uppercase;"">Actualizados Hoy</div><div style=""font-size: 16px; font-weight: 800; color: #059669;"">{0}</div></td>", actualizadosHoy))
         sb.AppendLine(String.Format("        <td style=""width: 16.6%; background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 4px; padding: 10px; text-align: center;""><div style=""font-size: 10px; color: #64748b; font-weight: 700; text-transform: uppercase;"">Sin Movimiento (&#8805;4d)</div><div style=""font-size: 16px; font-weight: 800; color: #d97706;"">{0}</div></td>", sinMovimiento))
         sb.AppendLine(String.Format("        <td style=""width: 16.6%; background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 4px; padding: 10px; text-align: center;""><div style=""font-size: 10px; color: #64748b; font-weight: 700; text-transform: uppercase;"">En Colocación (OC)</div><div style=""font-size: 16px; font-weight: 800; color: #16a34a;"">{0}</div></td>", cerradosGanados))
-        sb.AppendLine(String.Format("        <td style=""width: 16.6%; background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 4px; padding: 10px; text-align: center;""><div style=""font-size: 10px; color: #64748b; font-weight: 700; text-transform: uppercase;"">Cancelados / Perdidos</div><div style=""font-size: 16px; font-weight: 800; color: #dc2626;"">{0}</div></td>", canceladosPerdidos))
+        sb.AppendLine(String.Format("        <td style=""width: 16.6%; background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 4px; padding: 10px; text-align: center;""><div style=""font-size: 10px; color: #64748b; font-weight: 700; text-transform: uppercase;"">Cancelados / Declinados</div><div style=""font-size: 16px; font-weight: 800; color: #dc2626;"">{0} <span style=""font-size: 10px; font-weight: normal; color: #991b1b;"">({1} canc. / {2} decl.)</span></div></td>", canceladosDeclinados, totalCancelados, totalDeclinados))
         sb.AppendLine("      </tr>")
         sb.AppendLine("    </table>")
 
@@ -4865,12 +4965,17 @@ intenta_otravz:
         Dim sb As New System.Text.StringBuilder()
 
         Dim totalP As Integer = proyectos.Count
-        Dim rojos = proyectos.Where(Function(p) p.Semaforo = "ROJO").OrderByDescending(Function(p) p.TotalMonto).ToList()
-        Dim amarillos = proyectos.Where(Function(p) p.Semaforo = "AMARILLO").ToList()
-        Dim verdes = proyectos.Where(Function(p) p.Semaforo = "VERDE").ToList()
+        Dim totalActivos As Integer = proyectos.Where(Function(p) Not p.EsCanceladoODeclinado).Count()
+        Dim totalCerrados As Integer = proyectos.Where(Function(p) p.EsCanceladoODeclinado).Count()
+        Dim totalDeclinados As Integer = proyectos.Where(Function(p) p.EsDeclinado).Count()
+        Dim totalCancelados As Integer = proyectos.Where(Function(p) p.EsCancelado).Count()
 
-        ' Vendedor con mayor concentración de proyectos en ROJO o AMARILLO
-        Dim vendedoresCriticos = proyectos.Where(Function(p) p.Semaforo = "ROJO" OrElse p.Semaforo = "AMARILLO") _
+        Dim rojos = proyectos.Where(Function(p) p.Semaforo = "ROJO" AndAlso Not p.EsCanceladoODeclinado).OrderByDescending(Function(p) p.TotalMonto).ToList()
+        Dim amarillos = proyectos.Where(Function(p) p.Semaforo = "AMARILLO" AndAlso Not p.EsCanceladoODeclinado).ToList()
+        Dim verdes = proyectos.Where(Function(p) p.Semaforo = "VERDE" AndAlso Not p.EsCanceladoODeclinado).ToList()
+
+        ' Vendedor con mayor concentración de proyectos en ROJO o AMARILLO (activos)
+        Dim vendedoresCriticos = proyectos.Where(Function(p) (p.Semaforo = "ROJO" OrElse p.Semaforo = "AMARILLO") AndAlso Not p.EsCanceladoODeclinado) _
                                           .GroupBy(Function(p) p.VendedorNombre) _
                                           .OrderByDescending(Function(g) g.Count) _
                                           .ToList()
@@ -4883,7 +4988,7 @@ intenta_otravz:
         ' Transiciones de semáforo (de VERDE ayer a AMARILLO/ROJO hoy)
         Dim degradados As New List(Of String)()
         If dtSnapAyer IsNot Nothing AndAlso dtSnapAyer.Rows.Count > 0 Then
-            For Each p In proyectos
+            For Each p In proyectos.Where(Function(item) Not item.EsCanceladoODeclinado)
                 If p.Semaforo = "AMARILLO" OrElse p.Semaforo = "ROJO" Then
                     Dim rowsAyer = dtSnapAyer.Select(String.Format("proyecto_id = '{0}'", p.ProyectoId.Replace("'", "''")))
                     If rowsAyer.Length > 0 Then
@@ -4901,18 +5006,18 @@ intenta_otravz:
         sb.AppendLine("      <div style=""font-weight: 700; font-size: 13px; color: #166534; margin-bottom: 6px;"">&#9658; Diagnóstico General y Comportamiento del Semáforo:</div>")
         sb.AppendLine("      <ul>")
 
-        ' Diagnóstico 1: Balance general de semáforo
-        Dim pctRojos As Double = If(totalP > 0, Math.Round((CDbl(rojos.Count) / CDbl(totalP)) * 100.0, 1), 0)
-        Dim pctVerdes As Double = If(totalP > 0, Math.Round((CDbl(verdes.Count) / CDbl(totalP)) * 100.0, 1), 0)
-        sb.AppendLine(String.Format("        <li><strong>Estado de la Cartera:</strong> De un universo de <strong>{0} proyectos</strong> activos desde el 24/08/2026, el <strong>{1}% ({2} proyectos)</strong> opera en condiciones óptimas (VERDE), mientras que el <strong>{3}% ({4} proyectos)</strong> se encuentra en semáforo ROJO requiriendo acción resolutiva prioritaria.</li>",
-                                    totalP, pctVerdes, verdes.Count, pctRojos, rojos.Count))
+        ' Diagnóstico 1: Balance general de cartera activa
+        Dim pctRojos As Double = If(totalActivos > 0, Math.Round((CDbl(rojos.Count) / CDbl(totalActivos)) * 100.0, 1), 0)
+        Dim pctVerdes As Double = If(totalActivos > 0, Math.Round((CDbl(verdes.Count) / CDbl(totalActivos)) * 100.0, 1), 0)
+        sb.AppendLine(String.Format("        <li><strong>Estado de la Cartera Activa:</strong> De un universo total de <strong>{0} proyectos</strong> registrados desde el 24/08/2026, <strong>{1} se encuentran en seguimiento comercial activo</strong> ({2} proyectos fuera de flujo: {3} cancelados y {4} declinado). El <strong>{5}% ({6} proyectos)</strong> opera en condiciones óptimas (VERDE), mientras que el <strong>{7}% ({8} proyectos)</strong> se encuentra en semáforo ROJO requiriendo acción resolutiva.</li>",
+                                    totalP, totalActivos, totalCerrados, totalCancelados, totalDeclinados, pctVerdes, verdes.Count, pctRojos, rojos.Count))
 
-        ' Diagnóstico 2: Proyectos críticos en ROJO y motivos
+        ' Diagnóstico 2: Proyectos críticos activos en ROJO y motivos
         If rojos.Count > 0 Then
             Dim foliosTopRojos As String = String.Join(", ", rojos.Take(4).Select(Function(p) p.ProyectoId & " (" & p.MotivoPrioridad & ")"))
-            sb.AppendLine(String.Format("        <li><strong>Foco Rojo Crítico:</strong> Los proyectos de mayor prioridad en ROJO son: {0}.</li>", foliosTopRojos))
+            sb.AppendLine(String.Format("        <li><strong>Foco Rojo Operativo:</strong> Los proyectos prioritarios con rezago o vencimiento son: {0}.</li>", foliosTopRojos))
         Else
-            sb.AppendLine("        <li><strong>Sin Focos Rojos:</strong> No se detectaron proyectos con retrasos críticos o compromisos vencidos.</li>")
+            sb.AppendLine("        <li><strong>Sin Focos Rojos Operativos:</strong> No se detectaron proyectos activos con retrasos críticos o compromisos vencidos.</li>")
         End If
 
         ' Diagnóstico 3: Mayor impacto económico en riesgo
@@ -4935,7 +5040,12 @@ intenta_otravz:
             sb.AppendLine("        <li><strong>Estabilidad del Semáforo:</strong> No se presentaron degradaciones de proyectos de VERDE a semáforo restrictivo respecto a la jornada previa.</li>")
         End If
 
-        ' Diagnóstico 6: Recomendación Directiva
+        ' Diagnóstico 6: Apartado de Declinados
+        If totalDeclinados > 0 Then
+            sb.AppendLine(String.Format("        <li><strong>Proyectos Declinados ({0}):</strong> Se ha segregado en el <em>Apartado 8</em> el detalle del proyecto declinado con su bitácora de seguimiento completa para consulta y justificación comercial.</li>", totalDeclinados))
+        End If
+
+        ' Diagnóstico 7: Recomendación Directiva
         sb.AppendLine("        <li><strong>Intervención Directiva Sugerida:</strong> Agilizar la confirmación de cotizaciones pendientes de orden de compra con clientes clave e instruir a compras la colocación expedita de órdenes a proveedores en pedidos ganados.</li>")
 
         sb.AppendLine("      </ul>")
@@ -4950,12 +5060,13 @@ intenta_otravz:
     Private Function GenerarPrioridadesAtencionHtml(ByVal proyectos As List(Of ItemProyectoInforme)) As String
         Dim sb As New System.Text.StringBuilder()
 
-        ' Ordenamiento por prioridad:
+        ' Ordenamiento por prioridad (solo proyectos activos en cartera, excluyendo cancelados y declinados):
         ' 1. Semáforo ROJO primero, luego AMARILLO, luego VERDE
         ' 2. Compromiso vencido o próximo
         ' 3. Días sin movimiento descendente
         ' 4. Monto económico descendente
-        Dim prioritarios = proyectos.OrderBy(Function(p) If(p.Semaforo = "ROJO", 0, If(p.Semaforo = "AMARILLO", 1, 2))) _
+        Dim prioritarios = proyectos.Where(Function(p) Not p.EsCanceladoODeclinado) _
+                                    .OrderBy(Function(p) If(p.Semaforo = "ROJO", 0, If(p.Semaforo = "AMARILLO", 1, 2))) _
                                     .ThenBy(Function(p) If(p.DiasParaCompromiso.HasValue, p.DiasParaCompromiso.Value, 9999)) _
                                     .ThenByDescending(Function(p) p.DiasSinMovimiento) _
                                     .ThenByDescending(Function(p) p.TotalMonto) _
@@ -4963,7 +5074,7 @@ intenta_otravz:
                                     .ToList()
 
         sb.AppendLine("    <div class=""sec-heading"">&#127919; 5. Prioridades de Atención Inmediata</div>")
-        sb.AppendLine("    <p style=""font-size: 12px; color: #64748b; margin: -6px 0 14px 0;"">Listado clasificado de proyectos que demandan acción ejecutiva inmediata y seguimiento prioritario.</p>")
+        sb.AppendLine("    <p style=""font-size: 12px; color: #64748b; margin: -6px 0 14px 0;"">Listado clasificado de proyectos activos que demandan acción ejecutiva inmediata y seguimiento prioritario.</p>")
 
         For Each p In prioritarios
             Dim badgeClass As String = If(p.Semaforo = "ROJO", "badge-r", If(p.Semaforo = "AMARILLO", "badge-a", "badge-v"))
@@ -5085,7 +5196,8 @@ intenta_otravz:
 
         sb.AppendLine("    <div class=""sec-heading"">&#128221; 7. Detalle Estructurado por Clasificación y Vendedor</div>")
 
-        Dim clasificaciones = proyectos.GroupBy(Function(p) p.ClasificacionNombre).OrderBy(Function(g) g.Key)
+        Dim proyectosParaDetalle = proyectos.Where(Function(p) Not p.EsDeclinado).ToList()
+        Dim clasificaciones = proyectosParaDetalle.GroupBy(Function(p) p.ClasificacionNombre).OrderBy(Function(g) g.Key)
 
         For Each grpClasif In clasificaciones
             Dim totalPryClasif As Integer = grpClasif.Count
@@ -5162,6 +5274,101 @@ intenta_otravz:
                 sb.AppendLine("      </table>")
             Next
 
+            sb.AppendLine("    </div>")
+        Next
+
+        Return sb.ToString()
+    End Function
+
+    ''' <summary>
+    ''' Sección 8: Apartado Exclusivo para Proyectos DECLINADOS (activo = 'CERRADO').
+    ''' Presenta la ficha comercial del proyecto y el historial cronológico completo de seguimiento registrado en bitácora.
+    ''' </summary>
+    Private Function GenerarProyectosDeclinadosHtml(ByVal proyectos As List(Of ItemProyectoInforme)) As String
+        Dim sb As New System.Text.StringBuilder()
+
+        Dim declinados = proyectos.Where(Function(p) p.EsDeclinado).ToList()
+
+        sb.AppendLine("    <div class=""sec-heading"" style=""border-left-color: #475569; color: #1e293b;"">&#128683; 8. Apartado Exclusivo: Proyectos Declinados (activo = 'CERRADO')</div>")
+        sb.AppendLine("    <p style=""font-size: 12px; color: #64748b; margin: -6px 0 16px 0;"">Relación de proyectos marcados en sistema con estatus <strong>CERRADO / DECLINADO</strong> fuera del embudo comercial activo, detallando la justificación y seguimiento registrado en bitácora.</p>")
+
+        If declinados.Count = 0 Then
+            sb.AppendLine("    <div style=""padding: 14px 18px; background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; font-size: 12px; color: #64748b; margin-bottom: 20px;"">")
+            sb.AppendLine("      &#10003; <strong>Sin proyectos declinados:</strong> No se identificaron proyectos con estatus cerrado o declinado en el periodo evaluado.")
+            sb.AppendLine("    </div>")
+            Return sb.ToString()
+        End If
+
+        For Each p In declinados
+            sb.AppendLine("    <div style=""margin-bottom: 24px; border: 1px solid #cbd5e1; border-radius: 6px; overflow: hidden; background-color: #ffffff; box-shadow: 0 1px 3px rgba(0,0,0,0.05);"">")
+
+            ' Encabezado del proyecto declinado
+            sb.AppendLine("      <div style=""background-color: #334155; color: #ffffff !important; padding: 10px 16px; font-size: 13px; font-weight: 700;"">")
+            sb.AppendLine("        <table role=""presentation"" border=""0"" cellpadding=""0"" cellspacing=""0"" style=""width: 100%; border-collapse: collapse;"">")
+            sb.AppendLine("          <tr>")
+            sb.AppendLine(String.Format("            <td style=""color: #ffffff !important;""><span style=""background-color: #dc2626; color: #ffffff !important; padding: 2px 8px; border-radius: 4px; font-size: 10px; font-weight: 800; letter-spacing: 0.5px; text-transform: uppercase; margin-right: 8px;"">DECLINADO</span> Folio: <span style=""font-family: Consolas, monospace; font-size: 14px;"">{0}</span> &bull; {1}</td>",
+                                        p.ProyectoId, System.Net.WebUtility.HtmlEncode(p.ClienteNombre)))
+            sb.AppendLine(String.Format("            <td style=""text-align: right; color: #ffffff !important; font-weight: 800; font-size: 13px;"">{0:C2} {1}</td>", p.TotalMonto, p.MonedaSiglas))
+            sb.AppendLine("          </tr>")
+            sb.AppendLine("        </table>")
+            sb.AppendLine("      </div>")
+
+            ' Ficha técnica y comercial
+            sb.AppendLine("      <div style=""padding: 12px 16px; background-color: #f8fafc; border-bottom: 1px solid #e2e8f0; font-size: 12px; color: #334155;"">")
+            sb.AppendLine("        <table role=""presentation"" border=""0"" cellpadding=""0"" cellspacing=""0"" style=""width: 100%; border-collapse: collapse;"">")
+            sb.AppendLine("          <tr>")
+            sb.AppendLine(String.Format("            <td style=""width: 50%; vertical-align: top; padding-right: 10px;""><strong>Descripción:</strong> {0}<br/><strong>Clasificación:</strong> {1}</td>",
+                                        System.Net.WebUtility.HtmlEncode(p.Titulo), System.Net.WebUtility.HtmlEncode(p.ClasificacionNombre)))
+            sb.AppendLine(String.Format("            <td style=""width: 50%; vertical-align: top;""><strong>Vendedor:</strong> {0}<br/><strong>Fecha Registro:</strong> {1:dd/MM/yyyy} &bull; <strong>Último Movimiento:</strong> {2:dd/MM/yyyy} ({3} días)</td>",
+                                        System.Net.WebUtility.HtmlEncode(p.VendedorNombre), p.FechaCreacion, p.FechaUltimoMovimiento, p.DiasSinMovimiento))
+            sb.AppendLine("          </tr>")
+            sb.AppendLine("        </table>")
+            sb.AppendLine("      </div>")
+
+            ' Sección de bitácora y seguimiento
+            sb.AppendLine("      <div style=""padding: 14px 16px;"">")
+            sb.AppendLine("        <div style=""font-size: 12px; font-weight: 700; color: #0f172a; margin-bottom: 8px;"">&#128220; Trazabilidad y Seguimiento Registrado en Bitácora:</div>")
+
+            If p.Seguimientos IsNot Nothing AndAlso p.Seguimientos.Count > 0 Then
+                sb.AppendLine("        <table class=""data-table"" style=""margin-bottom: 0;"">")
+                sb.AppendLine("          <thead>")
+                sb.AppendLine("            <tr>")
+                sb.AppendLine("              <th style=""width: 5%; text-align: center;"">#</th>")
+                sb.AppendLine("              <th style=""width: 16%; text-align: center;"">Fecha / Hora</th>")
+                sb.AppendLine("              <th style=""width: 24%;"">Usuario Registrador</th>")
+                sb.AppendLine("              <th style=""width: 55%;"">Detalle del Seguimiento Registrado</th>")
+                sb.AppendLine("            </tr>")
+                sb.AppendLine("          </thead>")
+                sb.AppendLine("          <tbody>")
+
+                Dim idx As Integer = 1
+                For Each seg In p.Seguimientos
+                    Dim esNotaResolucion As Boolean = seg.Detalle.IndexOf("declina", StringComparison.OrdinalIgnoreCase) >= 0 OrElse _
+                                                     seg.Detalle.IndexOf("cancela", StringComparison.OrdinalIgnoreCase) >= 0 OrElse _
+                                                     seg.Detalle.IndexOf("cerrad", StringComparison.OrdinalIgnoreCase) >= 0
+
+                    Dim rowBg As String = If(esNotaResolucion, "background-color: #fef2f2;", "")
+                    Dim textStyle As String = If(esNotaResolucion, "color: #991b1b; font-weight: 600;", "color: #334155;")
+                    Dim badgeResolucion As String = If(esNotaResolucion, "<span style=""display: inline-block; background-color: #dc2626; color: #ffffff !important; font-size: 9px; font-weight: 700; padding: 1px 5px; border-radius: 3px; margin-right: 4px;"">RESOLUCIÓN</span> ", "")
+
+                    sb.AppendLine(String.Format("            <tr style=""{0}"">", rowBg))
+                    sb.AppendLine(String.Format("              <td style=""text-align: center; font-size: 11px; color: #64748b;"">{0}</td>", idx))
+                    sb.AppendLine(String.Format("              <td style=""text-align: center; font-size: 11px;"">{0:dd/MM/yyyy HH:mm}</td>", seg.Fecha))
+                    sb.AppendLine(String.Format("              <td style=""font-size: 11px;""><strong>{0}</strong><br/><span style=""font-size: 10px; color: #64748b;"">{1}</span></td>",
+                                                System.Net.WebUtility.HtmlEncode(seg.UsuarioNombre), System.Net.WebUtility.HtmlEncode(seg.UsuarioClave)))
+                    sb.AppendLine(String.Format("              <td style=""font-size: 11px; line-height: 1.4; {0}"">{1}{2}</td>",
+                                                textStyle, badgeResolucion, System.Net.WebUtility.HtmlEncode(seg.Detalle).Replace(vbCrLf, "<br/>").Replace(vbLf, "<br/>")))
+                    sb.AppendLine("            </tr>")
+                    idx += 1
+                Next
+
+                sb.AppendLine("          </tbody>")
+                sb.AppendLine("        </table>")
+            Else
+                sb.AppendLine("        <div style=""font-size: 11px; color: #64748b; font-style: italic; padding: 6px 0;"">No se identificaron notas registradas en bitácora de seguimiento para este proyecto.</div>")
+            End If
+
+            sb.AppendLine("      </div>")
             sb.AppendLine("    </div>")
         Next
 
