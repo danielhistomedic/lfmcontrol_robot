@@ -5072,7 +5072,7 @@ intenta_otravz:
         End If
 
         ' Diagnóstico 7: Recomendación Directiva
-        sb.AppendLine("        <li><strong>Intervención Directiva Sugerida:</strong> Agilizar la confirmación de cotizaciones pendientes de orden de compra con clientes clave e instruir a compras la colocación expedita de órdenes a proveedores en pedidos ganados.</li>")
+        'sb.AppendLine("        <li><strong>Intervención Directiva Sugerida:</strong> Agilizar la confirmación de cotizaciones pendientes de orden de compra con clientes.</li>")
 
         sb.AppendLine("      </ul>")
         sb.AppendLine("    </div>")
