@@ -4927,7 +4927,7 @@ intenta_otravz:
 
         sb.AppendLine("    <div class=""sec-heading"">&#9888;&#65039; 2. Balance y Conteo de Pendientes</div>")
         sb.AppendLine("    <table class=""data-table"">")
-        sb.AppendLine("      </thead>")
+        sb.AppendLine("      <thead>")
         sb.AppendLine("        <tr><th>Categoría de Pendiente Detectado</th><th style=""text-align: center;"">Proyectos</th><th>Impacto Operativo / Comercial</th><th style=""text-align: center;"">Acción Requerida</th></tr>")
         sb.AppendLine("      </thead>")
         sb.AppendLine("      <tbody>")
@@ -5086,17 +5086,16 @@ intenta_otravz:
     Private Function GenerarPrioridadesAtencionHtml(ByVal proyectos As List(Of ItemProyectoInforme)) As String
         Dim sb As New System.Text.StringBuilder()
 
-        ' Ordenamiento por prioridad (solo proyectos activos en cartera, excluyendo cancelados y declinados):
+        ' Ordenamiento por prioridad (solo proyectos con orden de compra de cliente pendiente: EstatusId = 5):
         ' 1. Semáforo ROJO primero, luego AMARILLO, luego VERDE
         ' 2. Compromiso vencido o próximo
         ' 3. Días sin movimiento descendente
         ' 4. Monto económico descendente
-        Dim prioritarios = proyectos.Where(Function(p) Not p.EsCanceladoODeclinado) _
+        Dim prioritarios = proyectos.Where(Function(p) p.EstatusId = 5 AndAlso Not p.EsCanceladoODeclinado) _
                                     .OrderBy(Function(p) If(p.Semaforo = "ROJO", 0, If(p.Semaforo = "AMARILLO", 1, 2))) _
                                     .ThenBy(Function(p) If(p.DiasParaCompromiso.HasValue, p.DiasParaCompromiso.Value, 9999)) _
                                     .ThenByDescending(Function(p) p.DiasSinMovimiento) _
                                     .ThenByDescending(Function(p) p.TotalMonto) _
-                                    .Take(8) _
                                     .ToList()
 
         sb.AppendLine("    <div class=""sec-heading"">&#127919; 5. Prioridades de Atención Inmediata</div>")
