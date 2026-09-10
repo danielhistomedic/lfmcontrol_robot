@@ -3513,7 +3513,7 @@ intenta_otravz:
                 "WHERE c.enviado = 0 and c.omitir_informe = 0 " & _
                 "  AND (cd.precio_unitario = 0 OR cd.precio_unitario IS NULL) " & _
                 "  AND v.clasificacion_proyecto_id IN (" & String.Join(",", paramNames) & ") " & _
-                "ORDER BY cp.clasificacion, c.folio_solicitud, cd.id;"
+                "ORDER BY cp.clasificacion, COALESCE(p.cDatGenRazonSocial, p.cDatGenNombreAbreviado, 'PROVEEDOR NO ASIGNADO'), c.folio_solicitud, cd.id;"
 
             cmm.CommandText = sqlPartidas
             Dim dtPartidas As New DataTable()
@@ -3823,6 +3823,8 @@ intenta_otravz:
         sb.AppendLine("  .content { padding: 20px 24px; background-color: #ffffff; }")
         sb.AppendLine("  .clasif-section { margin-bottom: 24px; }")
         sb.AppendLine("  .clasif-title { width: 100%; border-collapse: collapse; background-color: #eff6ff; border-left: 5px solid #2563eb; border-bottom: 1px solid #dbeafe; margin-bottom: 14px; }")
+        sb.AppendLine("  .prov-section { margin-bottom: 18px; }")
+        sb.AppendLine("  .prov-title { width: 100%; border-collapse: collapse; margin-top: 6px; margin-bottom: 12px; }")
         sb.AppendLine("  .solicitud-card { background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; margin-bottom: 16px; overflow: hidden; }")
         sb.AppendLine("  .solicitud-header { width: 100%; border-collapse: collapse; background-color: #f8fafc; border-bottom: 1px solid #e2e8f0; }")
         sb.AppendLine("  .sol-title { font-size: 13px; font-weight: 700; color: #0f172a; margin-bottom: 4px; }")
@@ -3885,107 +3887,145 @@ intenta_otravz:
             sb.AppendLine(String.Format("                  <tr><td bgcolor=""#eff6ff"" style=""padding: 9px 14px; font-size: 13px; font-weight: 700; color: #1e40af; text-transform: uppercase; letter-spacing: 0.3px; background-color: #eff6ff;"">&#9658; Clasificación: {0} &nbsp;<span style=""font-size: 11px; font-weight: normal; color: #64748b;"">({1} partidas)</span></td></tr>", System.Net.WebUtility.HtmlEncode(clasifCurrent), rowsClasif.Length))
             sb.AppendLine("                </table>")
 
-            ' Nivel 2: Solicitudes de Cotización dentro de la clasificación
-            Dim cotizacionIds As New List(Of String)()
+            ' Nivel 2: Proveedores dentro de la clasificación
+            Dim proveedores As New List(Of String)()
             For Each r In rowsClasif
-                Dim cotIdStr As String = r("cotizacion_id").ToString()
-                If Not cotizacionIds.Contains(cotIdStr) Then
-                    cotizacionIds.Add(cotIdStr)
+                Dim pNom As String = If(Not IsDBNull(r("proveedor_nombre")) AndAlso Not String.IsNullOrWhiteSpace(r("proveedor_nombre").ToString()), r("proveedor_nombre").ToString().Trim(), "PROVEEDOR NO ASIGNADO")
+                If Not proveedores.Contains(pNom) Then
+                    proveedores.Add(pNom)
                 End If
             Next
+            ' Ordenar alfabéticamente dejando "PROVEEDOR NO ASIGNADO" al final
+            proveedores = proveedores.OrderBy(Function(p) If(p.Equals("PROVEEDOR NO ASIGNADO", StringComparison.OrdinalIgnoreCase), "ZZZZZZZZ", p)).ToList()
 
-            For Each cotIdStr In cotizacionIds
-                Dim idCurrent As String = cotIdStr
-                Dim rowsCot As DataRow() = dt.Select(String.Format("clasificacion_nombre = '{0}' AND cotizacion_id = {1}", clasifCurrent.Replace("'", "''"), idCurrent))
-                If rowsCot.Length = 0 Then Continue For
+            For Each prov In proveedores
+                Dim provCurrent As String = prov
+                Dim rowsProv As DataRow() = rowsClasif.Where(Function(r)
+                                                                 Dim pNom As String = If(Not IsDBNull(r("proveedor_nombre")) AndAlso Not String.IsNullOrWhiteSpace(r("proveedor_nombre").ToString()), r("proveedor_nombre").ToString().Trim(), "PROVEEDOR NO ASIGNADO")
+                                                                 Return pNom.Equals(provCurrent, StringComparison.OrdinalIgnoreCase)
+                                                             End Function).ToArray()
 
-                Dim primerRow As DataRow = rowsCot(0)
-                Dim folioSol As String = If(Not IsDBNull(primerRow("folio_solicitud")) AndAlso Not String.IsNullOrWhiteSpace(primerRow("folio_solicitud").ToString()), primerRow("folio_solicitud").ToString().Trim(), "ID #" & idCurrent)
-                Dim folioCot As String = If(Not IsDBNull(primerRow("folio_cotizacion")), primerRow("folio_cotizacion").ToString().Trim(), "")
-                Dim fchSolStr As String = If(Not IsDBNull(primerRow("fecha_solicitud")), Format(primerRow("fecha_solicitud"), "dd/MM/yyyy"), "-")
-                Dim pryId As String = If(Not IsDBNull(primerRow("proyecto_id")), primerRow("proyecto_id").ToString().Trim(), "")
-                Dim provNom As String = If(Not IsDBNull(primerRow("proveedor_nombre")), primerRow("proveedor_nombre").ToString().Trim(), "PROVEEDOR NO ASIGNADO")
-                Dim oportFlow As String = If(Not IsDBNull(primerRow("oportunidad_flowserve")), primerRow("oportunidad_flowserve").ToString().Trim(), "")
-                Dim clieNom As String = If(Not IsDBNull(primerRow("cliente_nombre")), primerRow("cliente_nombre").ToString().Trim(), "")
-                Dim clieFinal As String = If(Not IsDBNull(primerRow("cliente_final")), primerRow("cliente_final").ToString().Trim(), "")
-
-                sb.AppendLine("                <div class=""solicitud-card"" style=""background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; margin-bottom: 16px; overflow: hidden;"">")
-                sb.AppendLine("                  <table role=""presentation"" border=""0"" cellpadding=""0"" cellspacing=""0"" width=""100%"" bgcolor=""#f8fafc"" class=""solicitud-header"" style=""width: 100%; border-collapse: collapse; background-color: #f8fafc; border-bottom: 1px solid #e2e8f0;"">")
-                sb.AppendLine("                    <tr><td bgcolor=""#f8fafc"" style=""padding: 10px 14px; background-color: #f8fafc;"">")
-                sb.AppendLine(String.Format("                      <div class=""sol-title"" style=""font-size: 13px; font-weight: 700; color: #0f172a; margin-bottom: 4px;"">Solicitud: <span style=""font-family: Consolas, monospace; color: #1e40af;"">{0}</span>{1} &bull; Proveedor: <strong style=""color: #0f172a;"">{2}</strong></div>",
-                                            System.Net.WebUtility.HtmlEncode(folioSol),
-                                            If(Not String.IsNullOrWhiteSpace(folioCot), " (Cotiz: " & System.Net.WebUtility.HtmlEncode(folioCot) & ")", ""),
-                                            System.Net.WebUtility.HtmlEncode(provNom)))
-
-                sb.AppendLine("                      <div class=""sol-meta"" style=""font-size: 11px; color: #475569; line-height: 1.5;"">")
-                sb.AppendLine(String.Format("                        <strong>Proyecto:</strong> {0} &bull; <strong>Fecha Solicitud:</strong> {1}",
-                                            System.Net.WebUtility.HtmlEncode(pryId),
-                                            System.Net.WebUtility.HtmlEncode(fchSolStr)))
-
-                If Not String.IsNullOrWhiteSpace(clieNom) Then
-                    sb.AppendLine(String.Format(" &bull; <strong>Cliente:</strong> {0}", System.Net.WebUtility.HtmlEncode(clieNom)))
-                End If
-                If Not String.IsNullOrWhiteSpace(clieFinal) Then
-                    sb.AppendLine(String.Format(" &bull; <strong>Cliente Final:</strong> {0}", System.Net.WebUtility.HtmlEncode(clieFinal)))
-                End If
-                If Not String.IsNullOrWhiteSpace(oportFlow) Then
-                    sb.AppendLine(String.Format(" &bull; <strong>Oportunidad Flowserve:</strong> {0}", System.Net.WebUtility.HtmlEncode(oportFlow)))
-                End If
-
-                sb.AppendLine("                      </div>")
-                sb.AppendLine("                    </td></tr>")
-                sb.AppendLine("                  </table>")
-
-                ' Nivel 3: Tabla de Partidas Pendientes
-                sb.AppendLine("                  <table role=""presentation"" border=""0"" cellpadding=""0"" cellspacing=""0"" width=""100%"" bgcolor=""#ffffff"" class=""items-table"" style=""width: 100%; border-collapse: collapse; font-size: 11px; text-align: left; background-color: #ffffff;"">")
-                sb.AppendLine("                    <thead>")
-                sb.AppendLine("                      <tr bgcolor=""#f1f5f9"">")
-                sb.AppendLine("                        <th bgcolor=""#f1f5f9"" style=""background-color: #f1f5f9; color: #334155; font-weight: 700; padding: 7px 10px; border-bottom: 2px solid #cbd5e1; font-size: 10px; text-transform: uppercase; width: 10%; text-align: center;"">Partida</th>")
-                sb.AppendLine("                        <th bgcolor=""#f1f5f9"" style=""background-color: #f1f5f9; color: #334155; font-weight: 700; padding: 7px 10px; border-bottom: 2px solid #cbd5e1; font-size: 10px; text-transform: uppercase; width: 12%; text-align: center;"">Cantidad</th>")
-                sb.AppendLine("                        <th bgcolor=""#f1f5f9"" style=""background-color: #f1f5f9; color: #334155; font-weight: 700; padding: 7px 10px; border-bottom: 2px solid #cbd5e1; font-size: 10px; text-transform: uppercase; width: 14%;"">Cód. Prov.</th>")
-                sb.AppendLine("                        <th bgcolor=""#f1f5f9"" style=""background-color: #f1f5f9; color: #334155; font-weight: 700; padding: 7px 10px; border-bottom: 2px solid #cbd5e1; font-size: 10px; text-transform: uppercase; width: 16%;"">No. Parte</th>")
-                sb.AppendLine("                        <th bgcolor=""#f1f5f9"" style=""background-color: #f1f5f9; color: #334155; font-weight: 700; padding: 7px 10px; border-bottom: 2px solid #cbd5e1; font-size: 10px; text-transform: uppercase; width: 48%;"">Descripción / Concepto</th>")
-                sb.AppendLine("                      </tr>")
-                sb.AppendLine("                    </thead>")
-                sb.AppendLine("                    <tbody>")
-
-                Dim idxPartida As Integer = 0
-                For Each r In rowsCot
-                    Dim partidaNum As String = "-"
-                    If Not IsDBNull(r("partida_num")) Then
-                        If TypeOf r("partida_num") Is Byte() Then
-                            partidaNum = System.Text.Encoding.UTF8.GetString(DirectCast(r("partida_num"), Byte())).Trim()
-                        Else
-                            partidaNum = r("partida_num").ToString().Trim()
-                        End If
-                        If String.IsNullOrWhiteSpace(partidaNum) Then partidaNum = "-"
+                ' Conteo de solicitudes únicas para este proveedor en esta clasificación
+                Dim cotizacionIdsProv As New List(Of String)()
+                For Each r In rowsProv
+                    Dim cotIdStr As String = r("cotizacion_id").ToString()
+                    If Not cotizacionIdsProv.Contains(cotIdStr) Then
+                        cotizacionIdsProv.Add(cotIdStr)
                     End If
-                    Dim cantVal As Double = If(Not IsDBNull(r("cantidad")), Convert.ToDouble(r("cantidad")), 0)
-                    Dim unidadStr As String = If(Not IsDBNull(r("unidad")), r("unidad").ToString().Trim(), "pza")
-                    Dim codProv As String = If(Not IsDBNull(r("codigo_proveedor")), r("codigo_proveedor").ToString().Trim(), "")
-                    Dim numParte As String = If(Not IsDBNull(r("num_parte")), r("num_parte").ToString().Trim(), "")
-                    Dim descProv As String = If(Not IsDBNull(r("descripcion_proveedor")), r("descripcion_proveedor").ToString().Trim(), "")
-                    Dim descAdic As String = If(Not IsDBNull(r("descripcion_adicional")), r("descripcion_adicional").ToString().Trim(), "")
-
-                    Dim rowBg As String = If(idxPartida Mod 2 = 0, "#ffffff", "#f8fafc")
-                    sb.AppendLine(String.Format("                      <tr bgcolor=""{0}"" style=""background-color: {0};"">", rowBg))
-                    sb.AppendLine(String.Format("                        <td bgcolor=""{0}"" style=""text-align: center; font-weight: bold; color: #0f172a; padding: 7px 10px; border-bottom: 1px solid #e2e8f0; background-color: {0}; font-family: Consolas, monospace;"">{1}</td>", rowBg, System.Net.WebUtility.HtmlEncode(partidaNum)))
-                    sb.AppendLine(String.Format("                        <td bgcolor=""{0}"" style=""text-align: center; font-weight: bold; color: #1e293b; padding: 7px 10px; border-bottom: 1px solid #e2e8f0; background-color: {0};"">{1:N2} {2}</td>", rowBg, cantVal, System.Net.WebUtility.HtmlEncode(unidadStr)))
-                    sb.AppendLine(String.Format("                        <td bgcolor=""{0}"" style=""padding: 7px 10px; border-bottom: 1px solid #e2e8f0; background-color: {0};"">{1}</td>", rowBg, If(Not String.IsNullOrWhiteSpace(codProv), "<span class=""tag-code"" style=""display: inline-block; background-color: #f1f5f9; border: 1px solid #cbd5e1; border-radius: 3px; padding: 1px 5px; font-family: Consolas, monospace; font-size: 11px; color: #0f172a;"">" & System.Net.WebUtility.HtmlEncode(codProv) & "</span>", "-")))
-                    sb.AppendLine(String.Format("                        <td bgcolor=""{0}"" style=""padding: 7px 10px; border-bottom: 1px solid #e2e8f0; background-color: {0};"">{1}</td>", rowBg, If(Not String.IsNullOrWhiteSpace(numParte), "<span class=""tag-code"" style=""display: inline-block; background-color: #f1f5f9; border: 1px solid #cbd5e1; border-radius: 3px; padding: 1px 5px; font-family: Consolas, monospace; font-size: 11px; color: #0f172a;"">" & System.Net.WebUtility.HtmlEncode(numParte) & "</span>", "-")))
-
-                    sb.Append(String.Format("                        <td bgcolor=""{0}"" style=""padding: 7px 10px; border-bottom: 1px solid #e2e8f0; background-color: {0}; color: #1e293b;"">", rowBg))
-                    sb.Append(System.Net.WebUtility.HtmlEncode(descProv))
-                    If Not String.IsNullOrWhiteSpace(descAdic) AndAlso Not descAdic.Equals(descProv, StringComparison.OrdinalIgnoreCase) Then
-                        sb.Append(String.Format("<div class=""desc-adic"" style=""font-size: 11px; color: #64748b; margin-top: 3px; font-style: italic;"">{0}</div>", System.Net.WebUtility.HtmlEncode(descAdic)))
-                    End If
-                    sb.AppendLine("</td>")
-                    sb.AppendLine("                      </tr>")
-                    idxPartida += 1
                 Next
 
-                sb.AppendLine("                    </tbody>")
+                Dim cantSolsProv As Integer = cotizacionIdsProv.Count
+                Dim cantPartidasProv As Integer = rowsProv.Length
+                Dim txtSols As String = If(cantSolsProv = 1, "1 solicitud", cantSolsProv & " solicitudes")
+                Dim txtPartidas As String = If(cantPartidasProv = 1, "1 partida", cantPartidasProv & " partidas")
+
+                Dim esSinProv As Boolean = provCurrent.Equals("PROVEEDOR NO ASIGNADO", StringComparison.OrdinalIgnoreCase)
+                Dim provBorderColor As String = If(esSinProv, "#d97706", "#0284c7")
+                Dim provBgColor As String = If(esSinProv, "#fffbeb", "#f8fafc")
+                Dim provTextColor As String = If(esSinProv, "#92400e", "#0f172a")
+                Dim provBorderAll As String = If(esSinProv, "#fcd34d", "#cbd5e1")
+
+                sb.AppendLine("                <div class=""prov-section"" style=""margin-bottom: 18px;"">")
+                sb.AppendLine(String.Format("                  <table role=""presentation"" border=""0"" cellpadding=""0"" cellspacing=""0"" width=""100%"" bgcolor=""{0}"" class=""prov-title"" style=""width: 100%; border-collapse: collapse; background-color: {0}; border: 1px solid {1}; border-left: 4px solid {2}; margin-top: 6px; margin-bottom: 12px; border-radius: 4px;"">", provBgColor, provBorderAll, provBorderColor))
+                sb.AppendLine(String.Format("                    <tr><td bgcolor=""{0}"" style=""padding: 7px 12px; font-size: 12px; font-weight: 700; color: {1}; background-color: {0}; text-transform: uppercase; letter-spacing: 0.3px;"">&#9670; Proveedor: {2} &nbsp;<span style=""font-size: 11px; font-weight: normal; color: #475569; text-transform: none;"">({3} &bull; {4})</span></td></tr>", provBgColor, provTextColor, System.Net.WebUtility.HtmlEncode(provCurrent), txtSols, txtPartidas))
                 sb.AppendLine("                  </table>")
+
+                ' Nivel 3: Solicitudes de Cotización de este Proveedor
+                For Each cotIdStr In cotizacionIdsProv
+                    Dim idCurrent As String = cotIdStr
+                    Dim rowsCot As DataRow() = rowsProv.Where(Function(r) r("cotizacion_id").ToString() = idCurrent).ToArray()
+                    If rowsCot.Length = 0 Then Continue For
+
+                    Dim primerRow As DataRow = rowsCot(0)
+                    Dim folioSol As String = If(Not IsDBNull(primerRow("folio_solicitud")) AndAlso Not String.IsNullOrWhiteSpace(primerRow("folio_solicitud").ToString()), primerRow("folio_solicitud").ToString().Trim(), "ID #" & idCurrent)
+                    Dim folioCot As String = If(Not IsDBNull(primerRow("folio_cotizacion")), primerRow("folio_cotizacion").ToString().Trim(), "")
+                    Dim fchSolStr As String = If(Not IsDBNull(primerRow("fecha_solicitud")), Format(primerRow("fecha_solicitud"), "dd/MM/yyyy"), "-")
+                    Dim pryId As String = If(Not IsDBNull(primerRow("proyecto_id")), primerRow("proyecto_id").ToString().Trim(), "")
+                    Dim provNom As String = If(Not IsDBNull(primerRow("proveedor_nombre")), primerRow("proveedor_nombre").ToString().Trim(), "PROVEEDOR NO ASIGNADO")
+                    Dim oportFlow As String = If(Not IsDBNull(primerRow("oportunidad_flowserve")), primerRow("oportunidad_flowserve").ToString().Trim(), "")
+                    Dim clieNom As String = If(Not IsDBNull(primerRow("cliente_nombre")), primerRow("cliente_nombre").ToString().Trim(), "")
+                    Dim clieFinal As String = If(Not IsDBNull(primerRow("cliente_final")), primerRow("cliente_final").ToString().Trim(), "")
+
+                    sb.AppendLine("                  <div class=""solicitud-card"" style=""background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; margin-bottom: 14px; overflow: hidden;"">")
+                    sb.AppendLine("                    <table role=""presentation"" border=""0"" cellpadding=""0"" cellspacing=""0"" width=""100%"" bgcolor=""#f8fafc"" class=""solicitud-header"" style=""width: 100%; border-collapse: collapse; background-color: #f8fafc; border-bottom: 1px solid #e2e8f0;"">")
+                    sb.AppendLine("                      <tr><td bgcolor=""#f8fafc"" style=""padding: 10px 14px; background-color: #f8fafc;"">")
+                    sb.AppendLine(String.Format("                        <div class=""sol-title"" style=""font-size: 13px; font-weight: 700; color: #0f172a; margin-bottom: 4px;"">Solicitud: <span style=""font-family: Consolas, monospace; color: #1e40af;"">{0}</span>{1} &bull; Proveedor: <strong style=""color: #0f172a;"">{2}</strong></div>",
+                                                System.Net.WebUtility.HtmlEncode(folioSol),
+                                                If(Not String.IsNullOrWhiteSpace(folioCot), " (Cotiz: " & System.Net.WebUtility.HtmlEncode(folioCot) & ")", ""),
+                                                System.Net.WebUtility.HtmlEncode(provNom)))
+
+                    sb.AppendLine("                        <div class=""sol-meta"" style=""font-size: 11px; color: #475569; line-height: 1.5;"">")
+                    sb.AppendLine(String.Format("                          <strong>Proyecto:</strong> {0} &bull; <strong>Fecha Solicitud:</strong> {1}",
+                                                System.Net.WebUtility.HtmlEncode(pryId),
+                                                System.Net.WebUtility.HtmlEncode(fchSolStr)))
+
+                    If Not String.IsNullOrWhiteSpace(clieNom) Then
+                        sb.AppendLine(String.Format(" &bull; <strong>Cliente:</strong> {0}", System.Net.WebUtility.HtmlEncode(clieNom)))
+                    End If
+                    If Not String.IsNullOrWhiteSpace(clieFinal) Then
+                        sb.AppendLine(String.Format(" &bull; <strong>Cliente Final:</strong> {0}", System.Net.WebUtility.HtmlEncode(clieFinal)))
+                    End If
+                    If Not String.IsNullOrWhiteSpace(oportFlow) Then
+                        sb.AppendLine(String.Format(" &bull; <strong>Oportunidad Flowserve:</strong> {0}", System.Net.WebUtility.HtmlEncode(oportFlow)))
+                    End If
+
+                    sb.AppendLine("                        </div>")
+                    sb.AppendLine("                      </td></tr>")
+                    sb.AppendLine("                    </table>")
+
+                    ' Nivel 4: Tabla de Partidas Pendientes
+                    sb.AppendLine("                    <table role=""presentation"" border=""0"" cellpadding=""0"" cellspacing=""0"" width=""100%"" bgcolor=""#ffffff"" class=""items-table"" style=""width: 100%; border-collapse: collapse; font-size: 11px; text-align: left; background-color: #ffffff;"">")
+                    sb.AppendLine("                      <thead>")
+                    sb.AppendLine("                        <tr bgcolor=""#f1f5f9"">")
+                    sb.AppendLine("                          <th bgcolor=""#f1f5f9"" style=""background-color: #f1f5f9; color: #334155; font-weight: 700; padding: 7px 10px; border-bottom: 2px solid #cbd5e1; font-size: 10px; text-transform: uppercase; width: 10%; text-align: center;"">Partida</th>")
+                    sb.AppendLine("                          <th bgcolor=""#f1f5f9"" style=""background-color: #f1f5f9; color: #334155; font-weight: 700; padding: 7px 10px; border-bottom: 2px solid #cbd5e1; font-size: 10px; text-transform: uppercase; width: 12%; text-align: center;"">Cantidad</th>")
+                    sb.AppendLine("                          <th bgcolor=""#f1f5f9"" style=""background-color: #f1f5f9; color: #334155; font-weight: 700; padding: 7px 10px; border-bottom: 2px solid #cbd5e1; font-size: 10px; text-transform: uppercase; width: 14%;"">Cód. Prov.</th>")
+                    sb.AppendLine("                          <th bgcolor=""#f1f5f9"" style=""background-color: #f1f5f9; color: #334155; font-weight: 700; padding: 7px 10px; border-bottom: 2px solid #cbd5e1; font-size: 10px; text-transform: uppercase; width: 16%;"">No. Parte</th>")
+                    sb.AppendLine("                          <th bgcolor=""#f1f5f9"" style=""background-color: #f1f5f9; color: #334155; font-weight: 700; padding: 7px 10px; border-bottom: 2px solid #cbd5e1; font-size: 10px; text-transform: uppercase; width: 48%;"">Descripción / Concepto</th>")
+                    sb.AppendLine("                        </tr>")
+                    sb.AppendLine("                      </thead>")
+                    sb.AppendLine("                      <tbody>")
+
+                    Dim idxPartida As Integer = 0
+                    For Each r In rowsCot
+                        Dim partidaNum As String = "-"
+                        If Not IsDBNull(r("partida_num")) Then
+                            If TypeOf r("partida_num") Is Byte() Then
+                                partidaNum = System.Text.Encoding.UTF8.GetString(DirectCast(r("partida_num"), Byte())).Trim()
+                            Else
+                                partidaNum = r("partida_num").ToString().Trim()
+                            End If
+                            If String.IsNullOrWhiteSpace(partidaNum) Then partidaNum = "-"
+                        End If
+                        Dim cantVal As Double = If(Not IsDBNull(r("cantidad")), Convert.ToDouble(r("cantidad")), 0)
+                        Dim unidadStr As String = If(Not IsDBNull(r("unidad")), r("unidad").ToString().Trim(), "pza")
+                        Dim codProv As String = If(Not IsDBNull(r("codigo_proveedor")), r("codigo_proveedor").ToString().Trim(), "")
+                        Dim numParte As String = If(Not IsDBNull(r("num_parte")), r("num_parte").ToString().Trim(), "")
+                        Dim descProv As String = If(Not IsDBNull(r("descripcion_proveedor")), r("descripcion_proveedor").ToString().Trim(), "")
+                        Dim descAdic As String = If(Not IsDBNull(r("descripcion_adicional")), r("descripcion_adicional").ToString().Trim(), "")
+
+                        Dim rowBg As String = If(idxPartida Mod 2 = 0, "#ffffff", "#f8fafc")
+                        sb.AppendLine(String.Format("                        <tr bgcolor=""{0}"" style=""background-color: {0};"">", rowBg))
+                        sb.AppendLine(String.Format("                          <td bgcolor=""{0}"" style=""text-align: center; font-weight: bold; color: #0f172a; padding: 7px 10px; border-bottom: 1px solid #e2e8f0; background-color: {0}; font-family: Consolas, monospace;"">{1}</td>", rowBg, System.Net.WebUtility.HtmlEncode(partidaNum)))
+                        sb.AppendLine(String.Format("                          <td bgcolor=""{0}"" style=""text-align: center; font-weight: bold; color: #1e293b; padding: 7px 10px; border-bottom: 1px solid #e2e8f0; background-color: {0};"">{1:N2} {2}</td>", rowBg, cantVal, System.Net.WebUtility.HtmlEncode(unidadStr)))
+                        sb.AppendLine(String.Format("                          <td bgcolor=""{0}"" style=""padding: 7px 10px; border-bottom: 1px solid #e2e8f0; background-color: {0};"">{1}</td>", rowBg, If(Not String.IsNullOrWhiteSpace(codProv), "<span class=""tag-code"" style=""display: inline-block; background-color: #f1f5f9; border: 1px solid #cbd5e1; border-radius: 3px; padding: 1px 5px; font-family: Consolas, monospace; font-size: 11px; color: #0f172a;"">" & System.Net.WebUtility.HtmlEncode(codProv) & "</span>", "-")))
+                        sb.AppendLine(String.Format("                          <td bgcolor=""{0}"" style=""padding: 7px 10px; border-bottom: 1px solid #e2e8f0; background-color: {0};"">{1}</td>", rowBg, If(Not String.IsNullOrWhiteSpace(numParte), "<span class=""tag-code"" style=""display: inline-block; background-color: #f1f5f9; border: 1px solid #cbd5e1; border-radius: 3px; padding: 1px 5px; font-family: Consolas, monospace; font-size: 11px; color: #0f172a;"">" & System.Net.WebUtility.HtmlEncode(numParte) & "</span>", "-")))
+
+                        sb.Append(String.Format("                          <td bgcolor=""{0}"" style=""padding: 7px 10px; border-bottom: 1px solid #e2e8f0; background-color: {0}; color: #1e293b;"">", rowBg))
+                        sb.Append(System.Net.WebUtility.HtmlEncode(descProv))
+                        If Not String.IsNullOrWhiteSpace(descAdic) AndAlso Not descAdic.Equals(descProv, StringComparison.OrdinalIgnoreCase) Then
+                            sb.Append(String.Format("<div class=""desc-adic"" style=""font-size: 11px; color: #64748b; margin-top: 3px; font-style: italic;"">{0}</div>", System.Net.WebUtility.HtmlEncode(descAdic)))
+                        End If
+                        sb.AppendLine("</td>")
+                        sb.AppendLine("                        </tr>")
+                        idxPartida += 1
+                    Next
+
+                    sb.AppendLine("                      </tbody>")
+                    sb.AppendLine("                    </table>")
+                    sb.AppendLine("                  </div>")
+                Next
+
                 sb.AppendLine("                </div>")
             Next
 
