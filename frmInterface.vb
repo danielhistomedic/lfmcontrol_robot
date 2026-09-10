@@ -308,7 +308,7 @@ Public Class frmInterface
             Dim Pwd As String = ""
 
             ' ==================================================================================================================================
-            Dim cadena_conexion_admin As String = "Server=histomedic.mx;Database=mirtheda_admin;Uid=mirtheda_root_________________;Pwd=Bsapmd2cKb*5;SSL Mode=None;"
+            Dim cadena_conexion_admin As String = "Server=histomedic.mx;Database=mirtheda_admin;Uid=mirtheda_root;Pwd=Bsapmd2cKb*5;SSL Mode=None;"
             If cx_MySQL_Admin.State = ConnectionState.Closed Then
                 If Not Test_MySQL_Admin(cadena_conexion_admin) Then
                     _servidorCentralConectado = False
@@ -4189,17 +4189,17 @@ intenta_otravz:
                 End If
             End If
 
-            ' 3. Obtener correos destinatarios del campo correos_copia_proyecto_venta en cat_consultorio
-            Dim sqlConsultorio As String = "SELECT correos_copia_proyecto_venta FROM cat_consultorio LIMIT 1"
+            ' 3. Obtener correos destinatarios del campo correos_solo_directivos en cat_consultorio
+            Dim sqlConsultorio As String = "SELECT correos_solo_directivos FROM cat_consultorio LIMIT 1"
             Dim dtConsultorio As DataTable = tb_Recordset_MySQL_local(sqlConsultorio)
-            If dtConsultorio Is Nothing OrElse dtConsultorio.Rows.Count = 0 OrElse IsDBNull(dtConsultorio.Rows(0)("correos_copia_proyecto_venta")) Then
-                AgregarLog(500, "[Informe Ejecutivo Proyectos] No se encontró configuración en cat_consultorio.correos_copia_proyecto_venta.")
+            If dtConsultorio Is Nothing OrElse dtConsultorio.Rows.Count = 0 OrElse IsDBNull(dtConsultorio.Rows(0)("correos_solo_directivos")) Then
+                AgregarLog(500, "[Informe Ejecutivo Proyectos] No se encontró configuración en cat_consultorio.correos_solo_directivos.")
                 Return
             End If
 
-            Dim destinatarios As String = dtConsultorio.Rows(0)("correos_copia_proyecto_venta").ToString().Trim()
+            Dim destinatarios As String = dtConsultorio.Rows(0)("correos_solo_directivos").ToString().Trim()
             If String.IsNullOrWhiteSpace(destinatarios) Then
-                AgregarLog(500, "[Informe Ejecutivo Proyectos] Omitido: cat_consultorio.correos_copia_proyecto_venta está vacío.")
+                AgregarLog(500, "[Informe Ejecutivo Proyectos] Omitido: cat_consultorio.correos_solo_directivos está vacío.")
                 Return
             End If
 
