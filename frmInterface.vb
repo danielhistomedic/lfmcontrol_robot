@@ -3532,6 +3532,13 @@ intenta_otravz:
             Dim htmlCuerpo As String = GenerarHtmlCotizacionesPendientes(tipoNotificacion, dtPartidas, frecuenciaDias)
             Dim asunto As String = String.Format("[LFMControl] Cotizaciones Pendientes de Cotizar - {0} ({1} partidas)", tipoNotificacion, dtPartidas.Rows.Count)
 
+            ' Guardar respaldo local del HTML generado para consulta y auditoría
+            Try
+                Dim rutaHtmlLocal As String = System.IO.Path.Combine(Application.StartupPath, "UltimoCotizacionesPendientes_" & tipoNotificacion & ".html")
+                System.IO.File.WriteAllText(rutaHtmlLocal, htmlCuerpo, System.Text.Encoding.UTF8)
+            Catch exFile As Exception
+            End Try
+
             ' 5. Enviar correo a los destinatarios configurados
             Dim enviadoExitoso As Boolean = EnviarCorreoNotificacionHTML(destinatarios, asunto, htmlCuerpo)
 
@@ -3663,56 +3670,55 @@ intenta_otravz:
         ' 2. Construcción del HTML
         ' -------------------------------------------------------------
         sb.AppendLine("    <!-- SECCIÓN: ANÁLISIS EJECUTIVO -->")
-        sb.AppendLine("    <div style=""background-color: #ffffff; border: 1px solid #94a3b8; border-left: 6px solid #0284c7; border-radius: 8px; margin-bottom: 28px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.07); overflow: hidden;"">")
+        sb.AppendLine("    <div style=""background-color: #ffffff; border: 1px solid #cbd5e1; border-left: 6px solid #0284c7; border-radius: 8px; margin-bottom: 24px; overflow: hidden;"">")
 
         ' Encabezado de la tarjeta ejecutiva
-        sb.AppendLine("      <div style=""background-color: #f8fafc; background-image: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%); padding: 16px 20px; border-bottom: 1px solid #e2e8f0;"">")
-        sb.AppendLine("        <table style=""width: 100%; border-collapse: collapse;"">")
-        sb.AppendLine("          <tr>")
-        sb.AppendLine("            <td>")
-        sb.AppendLine("              <div style=""font-size: 15px; font-weight: 800; color: #0f172a; text-transform: uppercase; letter-spacing: 0.5px;"">&#128202; ANÁLISIS EJECUTIVO</div>")
-        sb.AppendLine("              <div style=""font-size: 12px; color: #64748b; margin-top: 2px;"">Diagnóstico automático y recomendaciones estratégicas orientadas a la toma de decisiones</div>")
-        sb.AppendLine("            </td>")
-        sb.AppendLine(String.Format("            <td style=""text-align: right; font-size: 11px; color: #475569;"">Periodo: <strong>{0}</strong></td>", DateTime.Now.ToString("dd/MM/yyyy")))
-        sb.AppendLine("          </tr>")
-        sb.AppendLine("        </table>")
-        sb.AppendLine("      </div>")
+        sb.AppendLine("      <table role=""presentation"" border=""0"" cellpadding=""0"" cellspacing=""0"" width=""100%"" bgcolor=""#f8fafc"" style=""width: 100%; border-collapse: collapse; background-color: #f8fafc; border-bottom: 1px solid #e2e8f0;"">")
+        sb.AppendLine("        <tr>")
+        sb.AppendLine("          <td bgcolor=""#f8fafc"" style=""padding: 14px 18px; text-align: left; background-color: #f8fafc;"">")
+        sb.AppendLine("            <div style=""font-size: 14px; font-weight: 800; color: #0f172a; text-transform: uppercase; letter-spacing: 0.5px;"">&#128202; ANÁLISIS EJECUTIVO</div>")
+        sb.AppendLine("            <div style=""font-size: 11px; color: #64748b; margin-top: 2px;"">Diagnóstico automático y recomendaciones estratégicas orientadas a la toma de decisiones</div>")
+        sb.AppendLine("          </td>")
+        sb.AppendLine(String.Format("          <td bgcolor=""#f8fafc"" style=""padding: 14px 18px; text-align: right; font-size: 11px; color: #475569; background-color: #f8fafc;"">Periodo: <strong>{0}</strong></td>", DateTime.Now.ToString("dd/MM/yyyy")))
+        sb.AppendLine("        </tr>")
+        sb.AppendLine("      </table>")
 
-        sb.AppendLine("      <div style=""padding: 20px;"">")
+        sb.AppendLine("      <div style=""padding: 18px;"">")
 
         ' Cuadrícula de Métricas Clave (4 cajas)
-        sb.AppendLine("        <table style=""width: 100%; border-collapse: separate; border-spacing: 10px; margin-left: -10px; margin-right: -10px; margin-bottom: 18px;"">")
+        Dim colorAntig As String = If(maxDiasAntig >= 10, "#b91c1c", If(maxDiasAntig >= 4, "#d97706", "#15803d"))
+        sb.AppendLine("        <table role=""presentation"" border=""0"" cellpadding=""0"" cellspacing=""0"" width=""100%"" bgcolor=""#ffffff"" style=""width: 100%; border-collapse: separate; border-spacing: 8px; margin-bottom: 16px; background-color: #ffffff;"">")
         sb.AppendLine("          <tr>")
         ' Tarjeta 1
-        sb.AppendLine("            <td style=""width: 25%; background-color: #f1f5f9; border: 1px solid #cbd5e1; border-radius: 6px; padding: 12px; vertical-align: top;"">")
-        sb.AppendLine("              <div style=""font-size: 11px; color: #64748b; text-transform: uppercase; font-weight: 600;"">Solicitudes Pendientes</div>")
+        sb.AppendLine("            <td bgcolor=""#f8fafc"" style=""width: 25%; background-color: #f8fafc; border: 1px solid #cbd5e1; border-radius: 6px; padding: 10px 8px; vertical-align: top; text-align: center;"">")
+        sb.AppendLine("              <div style=""font-size: 10px; color: #64748b; text-transform: uppercase; font-weight: 700;"">Solicitudes Pendientes</div>")
         sb.AppendLine(String.Format("              <div style=""font-size: 20px; font-weight: 800; color: #0f172a; margin-top: 4px;"">{0}</div>", totalSolicitudesCount))
         sb.AppendLine(String.Format("              <div style=""font-size: 11px; color: #475569; margin-top: 2px;"">{0} partidas en total</div>", totalPartidas))
         sb.AppendLine("            </td>")
         ' Tarjeta 2
-        sb.AppendLine("            <td style=""width: 25%; background-color: #f1f5f9; border: 1px solid #cbd5e1; border-radius: 6px; padding: 12px; vertical-align: top;"">")
-        sb.AppendLine("              <div style=""font-size: 11px; color: #64748b; text-transform: uppercase; font-weight: 600;"">Clasificación Principal</div>")
-        sb.AppendLine(String.Format("              <div style=""font-size: 14px; font-weight: 800; color: #1e3a8a; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"">{0}</div>", System.Net.WebUtility.HtmlEncode(topClasifNombre)))
+        sb.AppendLine("            <td bgcolor=""#f8fafc"" style=""width: 25%; background-color: #f8fafc; border: 1px solid #cbd5e1; border-radius: 6px; padding: 10px 8px; vertical-align: top; text-align: center;"">")
+        sb.AppendLine("              <div style=""font-size: 10px; color: #64748b; text-transform: uppercase; font-weight: 700;"">Clasificación Principal</div>")
+        sb.AppendLine(String.Format("              <div style=""font-size: 13px; font-weight: 800; color: #1e3a8a; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"">{0}</div>", System.Net.WebUtility.HtmlEncode(topClasifNombre)))
         sb.AppendLine(String.Format("              <div style=""font-size: 11px; color: #475569; margin-top: 2px;"">{0} partidas ({1}%)</div>", topClasifCount, topClasifPct))
         sb.AppendLine("            </td>")
         ' Tarjeta 3
-        sb.AppendLine("            <td style=""width: 25%; background-color: #f1f5f9; border: 1px solid #cbd5e1; border-radius: 6px; padding: 12px; vertical-align: top;"">")
-        sb.AppendLine("              <div style=""font-size: 11px; color: #64748b; text-transform: uppercase; font-weight: 600;"">Proveedor</div>")
-        sb.AppendLine(String.Format("              <div style=""font-size: 14px; font-weight: 800; color: #0f172a; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"">{0}</div>", System.Net.WebUtility.HtmlEncode(topProvNombre)))
+        sb.AppendLine("            <td bgcolor=""#f8fafc"" style=""width: 25%; background-color: #f8fafc; border: 1px solid #cbd5e1; border-radius: 6px; padding: 10px 8px; vertical-align: top; text-align: center;"">")
+        sb.AppendLine("              <div style=""font-size: 10px; color: #64748b; text-transform: uppercase; font-weight: 700;"">Proveedor Principal</div>")
+        sb.AppendLine(String.Format("              <div style=""font-size: 13px; font-weight: 800; color: #0f172a; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"">{0}</div>", System.Net.WebUtility.HtmlEncode(topProvNombre)))
         sb.AppendLine(String.Format("              <div style=""font-size: 11px; color: #475569; margin-top: 2px;"">{0} partidas ({1}%)</div>", topProvCount, topProvPct))
         sb.AppendLine("            </td>")
         ' Tarjeta 4
-        sb.AppendLine("            <td style=""width: 25%; background-color: #f1f5f9; border: 1px solid #cbd5e1; border-radius: 6px; padding: 12px; vertical-align: top;"">")
-        sb.AppendLine("              <div style=""font-size: 11px; color: #64748b; text-transform: uppercase; font-weight: 600;"">Antigüedad Máxima</div>")
-        sb.AppendLine(String.Format("              <div style=""font-size: 20px; font-weight: 800; color: {0}; margin-top: 4px;"">{1} días</div>", If(maxDiasAntig >= 10, "#b91c1c", "#0f172a"), maxDiasAntig))
+        sb.AppendLine("            <td bgcolor=""#f8fafc"" style=""width: 25%; background-color: #f8fafc; border: 1px solid #cbd5e1; border-radius: 6px; padding: 10px 8px; vertical-align: top; text-align: center;"">")
+        sb.AppendLine("              <div style=""font-size: 10px; color: #64748b; text-transform: uppercase; font-weight: 700;"">Antigüedad Máxima</div>")
+        sb.AppendLine(String.Format("              <div style=""font-size: 20px; font-weight: 800; color: {0}; margin-top: 4px;"">{1} días</div>", colorAntig, maxDiasAntig))
         sb.AppendLine(String.Format("              <div style=""font-size: 11px; color: #475569; margin-top: 2px;"">{0}</div>", If(Not String.IsNullOrWhiteSpace(fechaMasAntiguaStr), "Desde " & fechaMasAntiguaStr, "Sin fecha registrada")))
         sb.AppendLine("            </td>")
         sb.AppendLine("          </tr>")
         sb.AppendLine("        </table>")
 
         ' Hallazgos Clave de Concentración y Distribución
-        sb.AppendLine("        <div style=""margin-bottom: 18px;"">")
-        sb.AppendLine("          <div style=""font-size: 13px; font-weight: 700; color: #0f172a; margin-bottom: 8px;"">&#128269; CONCENTRACIONES Y TENDENCIAS CLAVE</div>")
+        sb.AppendLine("        <div style=""margin-bottom: 16px;"">")
+        sb.AppendLine("          <div style=""font-size: 12px; font-weight: 700; color: #0f172a; margin-bottom: 6px;"">&#128269; CONCENTRACIONES Y TENDENCIAS CLAVE:</div>")
         sb.AppendLine("          <ul style=""margin: 0; padding-left: 18px; font-size: 12px; color: #334155; line-height: 1.6;"">")
 
         ' Viñeta 1: Distribución por clasificación
@@ -3736,7 +3742,6 @@ intenta_otravz:
 
         sb.AppendLine("          </ul>")
         sb.AppendLine("        </div>")
-
 
         ' Recomendaciones Concretas para Personal de Compras
         sb.AppendLine("        <div style=""background-color: #f0fdf4; border: 1px solid #bbf7d0; border-left: 4px solid #16a34a; border-radius: 4px; padding: 12px 16px;"">")
@@ -3796,72 +3801,89 @@ intenta_otravz:
             totalSolicitudes.Add(keySol)
         Next
 
+        Dim esFlowserve As Boolean = tipoNotificacion.IndexOf("flowserve", StringComparison.OrdinalIgnoreCase) >= 0
+        Dim hdrBg As String = If(esFlowserve, "#1e40af", "#0f766e")
+        Dim hdrGrad As String = If(esFlowserve, "linear-gradient(135deg, #1e40af 0%, #3b82f6 100%)", "linear-gradient(135deg, #0f766e 0%, #0284c7 100%)")
+        Dim hdrSubColor As String = If(esFlowserve, "#dbeafe", "#ccfbf1")
+
         sb.AppendLine("<!DOCTYPE html>")
         sb.AppendLine("<html>")
         sb.AppendLine("<head>")
         sb.AppendLine("<meta http-equiv=""Content-Type"" content=""text/html; charset=utf-8"" />")
+        sb.AppendLine("<meta name=""viewport"" content=""width=device-width, initial-scale=1.0"" />")
         sb.AppendLine("<style type=""text/css"">")
-        sb.AppendLine("  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f1f5f9; margin: 0; padding: 20px; color: #1e293b; }")
-        sb.AppendLine("  .container { max-width: 900px; margin: 0 auto; background-color: #ffffff; border: 1px solid #cbd5e1; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); }")
-        sb.AppendLine("  .header { background-color: #1e3a8a; background-image: linear-gradient(135deg, #0f172a 0%, #1e3a8a 100%); color: #ffffff; padding: 24px 30px; text-align: left; }")
-        sb.AppendLine("  .header h1 { margin: 0 0 6px 0; font-size: 20px; font-weight: 700; letter-spacing: -0.5px; color: #ffffff; }")
-        sb.AppendLine("  .header p { margin: 0; font-size: 13px; color: #cbd5e1; }")
-        sb.AppendLine("  .stats-bar { width: 100%; background-color: #f8fafc; border-bottom: 1px solid #e2e8f0; }")
-        sb.AppendLine("  .stat-item { font-size: 12px; color: #475569; }")
-        sb.AppendLine("  .stat-badge { display: inline-block; background-color: #1e3a8a; color: #ffffff; font-weight: bold; border-radius: 12px; padding: 2px 8px; font-size: 11px; margin-left: 4px; }")
-        sb.AppendLine("  .content { padding: 25px 30px; }")
-        sb.AppendLine("  .clasif-section { margin-bottom: 30px; }")
-        sb.AppendLine("  .clasif-title { background: #e0e7ff; color: #1e1b4b; font-size: 15px; font-weight: 700; padding: 10px 16px; border-left: 5px solid #2563eb; border-radius: 4px; margin-bottom: 16px; text-transform: uppercase; }")
-        sb.AppendLine("  .solicitud-card { background: #ffffff; border: 1px solid #e2e8f0; border-radius: 6px; margin-bottom: 20px; overflow: hidden; }")
-        sb.AppendLine("  .solicitud-header { background-color: #f8fafc; border-bottom: 1px solid #e2e8f0; padding: 12px 16px; }")
-        sb.AppendLine("  .sol-title { font-size: 14px; font-weight: 700; color: #0f172a; margin-bottom: 4px; }")
-        sb.AppendLine("  .sol-meta { font-size: 12px; color: #475569; line-height: 1.5; }")
+        sb.AppendLine("  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f1f5f9; margin: 0; padding: 0; color: #1e293b; }")
+        sb.AppendLine("  .wrapper-table { width: 100%; background-color: #f1f5f9; border-collapse: collapse; }")
+        sb.AppendLine("  .main-card { max-width: 920px; margin: 0 auto; background-color: #ffffff; border-radius: 8px; overflow: hidden; border: 1px solid #cbd5e1; }")
+        sb.AppendLine("  .header { color: #ffffff; padding: 22px 28px; text-align: left; }")
+        sb.AppendLine("  .header h1 { margin: 0 0 6px 0; font-size: 20px; font-weight: 800; letter-spacing: -0.5px; color: #ffffff !important; }")
+        sb.AppendLine("  .header p { margin: 0; font-size: 13px; }")
+        sb.AppendLine("  .stats-bar { width: 100%; border-collapse: collapse; background-color: #f8fafc; border-bottom: 2px solid #e2e8f0; }")
+        sb.AppendLine("  .stat-badge { display: inline-block; background-color: #1e40af; color: #ffffff !important; font-weight: bold; border-radius: 12px; padding: 2px 8px; font-size: 11px; margin-left: 4px; }")
+        sb.AppendLine("  .content { padding: 20px 24px; background-color: #ffffff; }")
+        sb.AppendLine("  .clasif-section { margin-bottom: 24px; }")
+        sb.AppendLine("  .clasif-title { width: 100%; border-collapse: collapse; background-color: #eff6ff; border-left: 5px solid #2563eb; border-bottom: 1px solid #dbeafe; margin-bottom: 14px; }")
+        sb.AppendLine("  .solicitud-card { background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; margin-bottom: 16px; overflow: hidden; }")
+        sb.AppendLine("  .solicitud-header { width: 100%; border-collapse: collapse; background-color: #f8fafc; border-bottom: 1px solid #e2e8f0; }")
+        sb.AppendLine("  .sol-title { font-size: 13px; font-weight: 700; color: #0f172a; margin-bottom: 4px; }")
+        sb.AppendLine("  .sol-meta { font-size: 11px; color: #475569; line-height: 1.5; }")
         sb.AppendLine("  .sol-meta strong { color: #1e293b; }")
-        sb.AppendLine("  table.items-table { width: 100%; border-collapse: collapse; font-size: 12px; text-align: left; }")
-        sb.AppendLine("  table.items-table th { background-color: #f1f5f9; color: #334155; font-weight: 600; padding: 9px 12px; border-bottom: 2px solid #cbd5e1; font-size: 11px; text-transform: uppercase; }")
-        sb.AppendLine("  table.items-table td { padding: 9px 12px; border-bottom: 1px solid #e2e8f0; vertical-align: top; }")
-        sb.AppendLine("  table.items-table tr:nth-child(even) { background-color: #f8fafc; }")
+        sb.AppendLine("  table.items-table { width: 100%; border-collapse: collapse; font-size: 11px; text-align: left; background-color: #ffffff; }")
+        sb.AppendLine("  table.items-table th { background-color: #f1f5f9; color: #334155; font-weight: 700; padding: 8px 10px; border-bottom: 2px solid #cbd5e1; font-size: 10px; text-transform: uppercase; }")
+        sb.AppendLine("  table.items-table td { padding: 8px 10px; border-bottom: 1px solid #e2e8f0; vertical-align: top; }")
         sb.AppendLine("  .tag-code { display: inline-block; background-color: #f1f5f9; border: 1px solid #cbd5e1; border-radius: 3px; padding: 1px 5px; font-family: Consolas, monospace; font-size: 11px; color: #0f172a; }")
         sb.AppendLine("  .desc-adic { font-size: 11px; color: #64748b; margin-top: 3px; font-style: italic; }")
-        sb.AppendLine("  .footer { background-color: #f8fafc; border-top: 1px solid #e2e8f0; padding: 18px 30px; font-size: 11px; color: #64748b; text-align: center; }")
+        sb.AppendLine("  .footer { background-color: #f8fafc; border-top: 1px solid #e2e8f0; padding: 16px 24px; font-size: 11px; color: #64748b; text-align: center; }")
         sb.AppendLine("</style>")
         sb.AppendLine("</head>")
-        sb.AppendLine("<body>")
-        sb.AppendLine("<div class=""container"">")
+        sb.AppendLine("<body style=""margin: 0; padding: 0; background-color: #f1f5f9; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #1e293b;"">")
+        sb.AppendLine("<table role=""presentation"" border=""0"" cellpadding=""0"" cellspacing=""0"" width=""100%"" bgcolor=""#f1f5f9"" class=""wrapper-table"" style=""width: 100%; border-collapse: collapse; background-color: #f1f5f9; margin: 0; padding: 0;"">")
+        sb.AppendLine("  <tr>")
+        sb.AppendLine("    <td align=""center"" style=""padding: 16px 8px; background-color: #f1f5f9;"">")
+        sb.AppendLine("      <!--[if (gte mso 9)|(IE)]>")
+        sb.AppendLine("      <table role=""presentation"" align=""center"" border=""0"" cellpadding=""0"" cellspacing=""0"" width=""920"" style=""width: 920px;"">")
+        sb.AppendLine("        <tr>")
+        sb.AppendLine("          <td align=""center"" valign=""top"">")
+        sb.AppendLine("      <![endif]-->")
+        sb.AppendLine("      <table role=""presentation"" align=""center"" border=""0"" cellpadding=""0"" cellspacing=""0"" width=""100%"" bgcolor=""#ffffff"" class=""main-card"" style=""max-width: 920px; width: 100%; margin: 0 auto; background-color: #ffffff; border-radius: 8px; border: 1px solid #cbd5e1; border-collapse: separate; overflow: hidden;"">")
+        sb.AppendLine("        <tr>")
+        sb.AppendLine("          <td align=""left"" bgcolor=""#ffffff"" style=""background-color: #ffffff; padding: 0;"">")
         sb.AppendLine("")
-        sb.AppendLine("  <!-- Encabezado principal con soporte para Outlook y Webmail -->")
-        sb.AppendLine("  <table role=""presentation"" border=""0"" cellpadding=""0"" cellspacing=""0"" width=""100%"" bgcolor=""#1e3a8a"" class=""header"" style=""width: 100%; border-collapse: collapse; background-color: #1e3a8a; background-image: linear-gradient(135deg, #0f172a 0%, #1e3a8a 100%);"">")
-        sb.AppendLine("    <tr>")
-        sb.AppendLine("      <td style=""padding: 24px 30px; text-align: left;"">")
-        sb.AppendLine(String.Format("        <h1 style=""margin: 0 0 6px 0; font-size: 20px; font-weight: 700; letter-spacing: -0.5px; color: #ffffff; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;"">Notificación de Cotizaciones Pendientes - {0}</h1>", System.Net.WebUtility.HtmlEncode(tipoNotificacion)))
-        sb.AppendLine(String.Format("        <p style=""margin: 0; font-size: 13px; color: #cbd5e1; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;"">Partidas pendientes de cotizar registradas en solicitudes a proveedores &bull; Generado el {0}</p>", DateTime.Now.ToString("dd/MM/yyyy HH:mm:ss")))
-        sb.AppendLine("      </td>")
-        sb.AppendLine("    </tr>")
-        sb.AppendLine("  </table>")
+        sb.AppendLine("            <!-- Encabezado principal corporativo claro -->")
+        sb.AppendLine(String.Format("            <table role=""presentation"" border=""0"" cellpadding=""0"" cellspacing=""0"" width=""100%"" bgcolor=""{0}"" class=""header"" style=""width: 100%; border-collapse: collapse; background-color: {0}; background: {1};"">", hdrBg, hdrGrad))
+        sb.AppendLine("              <tr>")
+        sb.AppendLine(String.Format("                <td bgcolor=""{0}"" style=""padding: 22px 28px; text-align: left; background-color: {0};"">", hdrBg))
+        sb.AppendLine(String.Format("                  <h1 style=""margin: 0 0 6px 0; font-size: 20px; font-weight: 800; letter-spacing: -0.5px; color: #ffffff !important; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;"">Notificación de Cotizaciones Pendientes - {0}</h1>", System.Net.WebUtility.HtmlEncode(tipoNotificacion)))
+        sb.AppendLine(String.Format("                  <p style=""margin: 0; font-size: 13px; color: {0} !important; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;"">Partidas pendientes de cotizar registradas en solicitudes a proveedores &bull; Generado el {1}</p>", hdrSubColor, DateTime.Now.ToString("dd/MM/yyyy HH:mm:ss")))
+        sb.AppendLine("                </td>")
+        sb.AppendLine("              </tr>")
+        sb.AppendLine("            </table>")
         sb.AppendLine("")
-        sb.AppendLine("  <!-- Barra de estadísticas -->")
-        sb.AppendLine("  <table role=""presentation"" border=""0"" cellpadding=""0"" cellspacing=""0"" width=""100%"" bgcolor=""#f8fafc"" class=""stats-bar"" style=""width: 100%; border-collapse: collapse; background-color: #f8fafc; border-bottom: 1px solid #e2e8f0;"">")
-        sb.AppendLine("    <tr>")
-        sb.AppendLine(String.Format("      <td style=""padding: 12px 30px; font-size: 12px; color: #475569; vertical-align: middle; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;"">Solicitudes con pendientes: <span class=""stat-badge"" style=""display: inline-block; background-color: #1e3a8a; color: #ffffff; font-weight: bold; border-radius: 12px; padding: 2px 8px; font-size: 11px; margin-left: 4px;"">{0}</span></td>", totalSolicitudes.Count))
-        sb.AppendLine(String.Format("      <td style=""padding: 12px 10px; font-size: 12px; color: #475569; vertical-align: middle; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;"">Total Partidas Pendientes: <span class=""stat-badge"" style=""display: inline-block; background-color: #1e3a8a; color: #ffffff; font-weight: bold; border-radius: 12px; padding: 2px 8px; font-size: 11px; margin-left: 4px;"">{0}</span></td>", dt.Rows.Count))
-        sb.AppendLine(String.Format("      <td style=""padding: 12px 30px; font-size: 12px; color: #475569; vertical-align: middle; text-align: right; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;"">Frecuencia programada: <strong style=""color: #1e293b;"">Cada {0} día(s)</strong></td>", frecuenciaDias))
-        sb.AppendLine("    </tr>")
-        sb.AppendLine("  </table>")
+        sb.AppendLine("            <!-- Barra de estadísticas -->")
+        sb.AppendLine("            <table role=""presentation"" border=""0"" cellpadding=""0"" cellspacing=""0"" width=""100%"" bgcolor=""#f8fafc"" class=""stats-bar"" style=""width: 100%; border-collapse: collapse; background-color: #f8fafc; border-bottom: 2px solid #e2e8f0;"">")
+        sb.AppendLine("              <tr>")
+        sb.AppendLine(String.Format("                <td bgcolor=""#f8fafc"" style=""padding: 12px 24px; font-size: 12px; color: #475569; vertical-align: middle; background-color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;"">Solicitudes con pendientes: <span class=""stat-badge"" style=""display: inline-block; background-color: #1e40af; color: #ffffff !important; font-weight: bold; border-radius: 12px; padding: 2px 8px; font-size: 11px; margin-left: 4px;"">{0}</span></td>", totalSolicitudes.Count))
+        sb.AppendLine(String.Format("                <td bgcolor=""#f8fafc"" style=""padding: 12px 10px; font-size: 12px; color: #475569; vertical-align: middle; text-align: center; background-color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;"">Total Partidas Pendientes: <span class=""stat-badge"" style=""display: inline-block; background-color: #1e40af; color: #ffffff !important; font-weight: bold; border-radius: 12px; padding: 2px 8px; font-size: 11px; margin-left: 4px;"">{0}</span></td>", dt.Rows.Count))
+        sb.AppendLine(String.Format("                <td bgcolor=""#f8fafc"" style=""padding: 12px 24px; font-size: 12px; color: #475569; vertical-align: middle; text-align: right; background-color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;"">Frecuencia programada: <strong style=""color: #1e293b;"">Cada {0} día(s)</strong></td>", frecuenciaDias))
+        sb.AppendLine("              </tr>")
+        sb.AppendLine("            </table>")
         sb.AppendLine("")
-        sb.AppendLine("  <div class=""content"">")
-
-        ' Generar e insertar el Análisis Ejecutivo antes del detalle
+        sb.AppendLine("            <div class=""content"" style=""padding: 20px 24px; background-color: #ffffff;"">")
+        sb.AppendLine("")
+        sb.AppendLine("              <!-- Generar e insertar el Análisis Ejecutivo antes del detalle -->")
         sb.Append(GenerarResumenEjecutivoHtml(tipoNotificacion, dt, totalSolicitudes.Count))
-
-        sb.AppendLine("    <div style=""margin-top: 10px; margin-bottom: 20px; font-size: 15px; font-weight: 700; color: #0f172a; border-bottom: 2px solid #cbd5e1; padding-bottom: 8px;"">&#128203; DETALLE DE SOLICITUDES Y PARTIDAS PENDIENTES</div>")
+        sb.AppendLine("")
+        sb.AppendLine("              <div style=""margin-top: 10px; margin-bottom: 16px; font-size: 15px; font-weight: 700; color: #1e3a8a; border-bottom: 2px solid #e2e8f0; padding-bottom: 6px;"">&#128203; DETALLE DE SOLICITUDES Y PARTIDAS PENDIENTES</div>")
 
         ' Nivel 1: Clasificación de Proyecto
         For Each clasif In clasificaciones
             Dim clasifCurrent As String = clasif
             Dim rowsClasif As DataRow() = dt.Select(String.Format("clasificacion_nombre = '{0}'", clasifCurrent.Replace("'", "''")))
 
-            sb.AppendLine("    <div class=""clasif-section"">")
-            sb.AppendLine(String.Format("      <div class=""clasif-title"">&#9658; Clasificación: {0} ({1} partidas)</div>", System.Net.WebUtility.HtmlEncode(clasifCurrent), rowsClasif.Length))
+            sb.AppendLine("              <div class=""clasif-section"" style=""margin-bottom: 24px;"">")
+            sb.AppendLine("                <table role=""presentation"" border=""0"" cellpadding=""0"" cellspacing=""0"" width=""100%"" bgcolor=""#eff6ff"" class=""clasif-title"" style=""width: 100%; border-collapse: collapse; background-color: #eff6ff; border-left: 5px solid #2563eb; border-bottom: 1px solid #dbeafe; margin-bottom: 14px;"">")
+            sb.AppendLine(String.Format("                  <tr><td bgcolor=""#eff6ff"" style=""padding: 9px 14px; font-size: 13px; font-weight: 700; color: #1e40af; text-transform: uppercase; letter-spacing: 0.3px; background-color: #eff6ff;"">&#9658; Clasificación: {0} &nbsp;<span style=""font-size: 11px; font-weight: normal; color: #64748b;"">({1} partidas)</span></td></tr>", System.Net.WebUtility.HtmlEncode(clasifCurrent), rowsClasif.Length))
+            sb.AppendLine("                </table>")
 
             ' Nivel 2: Solicitudes de Cotización dentro de la clasificación
             Dim cotizacionIds As New List(Of String)()
@@ -3887,15 +3909,16 @@ intenta_otravz:
                 Dim clieNom As String = If(Not IsDBNull(primerRow("cliente_nombre")), primerRow("cliente_nombre").ToString().Trim(), "")
                 Dim clieFinal As String = If(Not IsDBNull(primerRow("cliente_final")), primerRow("cliente_final").ToString().Trim(), "")
 
-                sb.AppendLine("      <div class=""solicitud-card"">")
-                sb.AppendLine("        <div class=""solicitud-header"">")
-                sb.AppendLine(String.Format("          <div class=""sol-title"">Solicitud: {0}{1} &bull; Proveedor: {2}</div>",
+                sb.AppendLine("                <div class=""solicitud-card"" style=""background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; margin-bottom: 16px; overflow: hidden;"">")
+                sb.AppendLine("                  <table role=""presentation"" border=""0"" cellpadding=""0"" cellspacing=""0"" width=""100%"" bgcolor=""#f8fafc"" class=""solicitud-header"" style=""width: 100%; border-collapse: collapse; background-color: #f8fafc; border-bottom: 1px solid #e2e8f0;"">")
+                sb.AppendLine("                    <tr><td bgcolor=""#f8fafc"" style=""padding: 10px 14px; background-color: #f8fafc;"">")
+                sb.AppendLine(String.Format("                      <div class=""sol-title"" style=""font-size: 13px; font-weight: 700; color: #0f172a; margin-bottom: 4px;"">Solicitud: <span style=""font-family: Consolas, monospace; color: #1e40af;"">{0}</span>{1} &bull; Proveedor: <strong style=""color: #0f172a;"">{2}</strong></div>",
                                             System.Net.WebUtility.HtmlEncode(folioSol),
                                             If(Not String.IsNullOrWhiteSpace(folioCot), " (Cotiz: " & System.Net.WebUtility.HtmlEncode(folioCot) & ")", ""),
                                             System.Net.WebUtility.HtmlEncode(provNom)))
 
-                sb.AppendLine("          <div class=""sol-meta"">")
-                sb.AppendLine(String.Format("            <strong>Proyecto:</strong> {0} &bull; <strong>Fecha Solicitud:</strong> {1}",
+                sb.AppendLine("                      <div class=""sol-meta"" style=""font-size: 11px; color: #475569; line-height: 1.5;"">")
+                sb.AppendLine(String.Format("                        <strong>Proyecto:</strong> {0} &bull; <strong>Fecha Solicitud:</strong> {1}",
                                             System.Net.WebUtility.HtmlEncode(pryId),
                                             System.Net.WebUtility.HtmlEncode(fchSolStr)))
 
@@ -3909,22 +3932,24 @@ intenta_otravz:
                     sb.AppendLine(String.Format(" &bull; <strong>Oportunidad Flowserve:</strong> {0}", System.Net.WebUtility.HtmlEncode(oportFlow)))
                 End If
 
-                sb.AppendLine("          </div>")
-                sb.AppendLine("        </div>")
+                sb.AppendLine("                      </div>")
+                sb.AppendLine("                    </td></tr>")
+                sb.AppendLine("                  </table>")
 
                 ' Nivel 3: Tabla de Partidas Pendientes
-                sb.AppendLine("        <table class=""items-table"">")
-                sb.AppendLine("          <thead>")
-                sb.AppendLine("            <tr>")
-                sb.AppendLine("              <th style=""width: 12%; text-align: center;"">Partida</th>")
-                sb.AppendLine("              <th style=""width: 12%; text-align: center;"">Cantidad</th>")
-                sb.AppendLine("              <th style=""width: 13%;"">Cód. Prov.</th>")
-                sb.AppendLine("              <th style=""width: 15%;"">No. Parte</th>")
-                sb.AppendLine("              <th style=""width: 48%;"">Descripción / Concepto</th>")
-                sb.AppendLine("            </tr>")
-                sb.AppendLine("          </thead>")
-                sb.AppendLine("          <tbody>")
+                sb.AppendLine("                  <table role=""presentation"" border=""0"" cellpadding=""0"" cellspacing=""0"" width=""100%"" bgcolor=""#ffffff"" class=""items-table"" style=""width: 100%; border-collapse: collapse; font-size: 11px; text-align: left; background-color: #ffffff;"">")
+                sb.AppendLine("                    <thead>")
+                sb.AppendLine("                      <tr bgcolor=""#f1f5f9"">")
+                sb.AppendLine("                        <th bgcolor=""#f1f5f9"" style=""background-color: #f1f5f9; color: #334155; font-weight: 700; padding: 7px 10px; border-bottom: 2px solid #cbd5e1; font-size: 10px; text-transform: uppercase; width: 10%; text-align: center;"">Partida</th>")
+                sb.AppendLine("                        <th bgcolor=""#f1f5f9"" style=""background-color: #f1f5f9; color: #334155; font-weight: 700; padding: 7px 10px; border-bottom: 2px solid #cbd5e1; font-size: 10px; text-transform: uppercase; width: 12%; text-align: center;"">Cantidad</th>")
+                sb.AppendLine("                        <th bgcolor=""#f1f5f9"" style=""background-color: #f1f5f9; color: #334155; font-weight: 700; padding: 7px 10px; border-bottom: 2px solid #cbd5e1; font-size: 10px; text-transform: uppercase; width: 14%;"">Cód. Prov.</th>")
+                sb.AppendLine("                        <th bgcolor=""#f1f5f9"" style=""background-color: #f1f5f9; color: #334155; font-weight: 700; padding: 7px 10px; border-bottom: 2px solid #cbd5e1; font-size: 10px; text-transform: uppercase; width: 16%;"">No. Parte</th>")
+                sb.AppendLine("                        <th bgcolor=""#f1f5f9"" style=""background-color: #f1f5f9; color: #334155; font-weight: 700; padding: 7px 10px; border-bottom: 2px solid #cbd5e1; font-size: 10px; text-transform: uppercase; width: 48%;"">Descripción / Concepto</th>")
+                sb.AppendLine("                      </tr>")
+                sb.AppendLine("                    </thead>")
+                sb.AppendLine("                    <tbody>")
 
+                Dim idxPartida As Integer = 0
                 For Each r In rowsCot
                     Dim partidaNum As String = "-"
                     If Not IsDBNull(r("partida_num")) Then
@@ -3942,40 +3967,52 @@ intenta_otravz:
                     Dim descProv As String = If(Not IsDBNull(r("descripcion_proveedor")), r("descripcion_proveedor").ToString().Trim(), "")
                     Dim descAdic As String = If(Not IsDBNull(r("descripcion_adicional")), r("descripcion_adicional").ToString().Trim(), "")
 
-                    sb.AppendLine("            <tr>")
-                    sb.AppendLine(String.Format("              <td style=""text-align: center; font-weight: bold; color: #1e293b;"">{0}</td>", System.Net.WebUtility.HtmlEncode(partidaNum)))
-                    sb.AppendLine(String.Format("              <td style=""text-align: center; font-weight: bold;"">{0:N2} {1}</td>", cantVal, System.Net.WebUtility.HtmlEncode(unidadStr)))
-                    sb.AppendLine(String.Format("              <td>{0}</td>", If(Not String.IsNullOrWhiteSpace(codProv), "<span class=""tag-code"">" & System.Net.WebUtility.HtmlEncode(codProv) & "</span>", "-")))
-                    sb.AppendLine(String.Format("              <td>{0}</td>", If(Not String.IsNullOrWhiteSpace(numParte), "<span class=""tag-code"">" & System.Net.WebUtility.HtmlEncode(numParte) & "</span>", "-")))
+                    Dim rowBg As String = If(idxPartida Mod 2 = 0, "#ffffff", "#f8fafc")
+                    sb.AppendLine(String.Format("                      <tr bgcolor=""{0}"" style=""background-color: {0};"">", rowBg))
+                    sb.AppendLine(String.Format("                        <td bgcolor=""{0}"" style=""text-align: center; font-weight: bold; color: #0f172a; padding: 7px 10px; border-bottom: 1px solid #e2e8f0; background-color: {0}; font-family: Consolas, monospace;"">{1}</td>", rowBg, System.Net.WebUtility.HtmlEncode(partidaNum)))
+                    sb.AppendLine(String.Format("                        <td bgcolor=""{0}"" style=""text-align: center; font-weight: bold; color: #1e293b; padding: 7px 10px; border-bottom: 1px solid #e2e8f0; background-color: {0};"">{1:N2} {2}</td>", rowBg, cantVal, System.Net.WebUtility.HtmlEncode(unidadStr)))
+                    sb.AppendLine(String.Format("                        <td bgcolor=""{0}"" style=""padding: 7px 10px; border-bottom: 1px solid #e2e8f0; background-color: {0};"">{1}</td>", rowBg, If(Not String.IsNullOrWhiteSpace(codProv), "<span class=""tag-code"" style=""display: inline-block; background-color: #f1f5f9; border: 1px solid #cbd5e1; border-radius: 3px; padding: 1px 5px; font-family: Consolas, monospace; font-size: 11px; color: #0f172a;"">" & System.Net.WebUtility.HtmlEncode(codProv) & "</span>", "-")))
+                    sb.AppendLine(String.Format("                        <td bgcolor=""{0}"" style=""padding: 7px 10px; border-bottom: 1px solid #e2e8f0; background-color: {0};"">{1}</td>", rowBg, If(Not String.IsNullOrWhiteSpace(numParte), "<span class=""tag-code"" style=""display: inline-block; background-color: #f1f5f9; border: 1px solid #cbd5e1; border-radius: 3px; padding: 1px 5px; font-family: Consolas, monospace; font-size: 11px; color: #0f172a;"">" & System.Net.WebUtility.HtmlEncode(numParte) & "</span>", "-")))
 
-                    sb.Append("              <td>")
+                    sb.Append(String.Format("                        <td bgcolor=""{0}"" style=""padding: 7px 10px; border-bottom: 1px solid #e2e8f0; background-color: {0}; color: #1e293b;"">", rowBg))
                     sb.Append(System.Net.WebUtility.HtmlEncode(descProv))
                     If Not String.IsNullOrWhiteSpace(descAdic) AndAlso Not descAdic.Equals(descProv, StringComparison.OrdinalIgnoreCase) Then
-                        sb.Append(String.Format("<div class=""desc-adic"">{0}</div>", System.Net.WebUtility.HtmlEncode(descAdic)))
+                        sb.Append(String.Format("<div class=""desc-adic"" style=""font-size: 11px; color: #64748b; margin-top: 3px; font-style: italic;"">{0}</div>", System.Net.WebUtility.HtmlEncode(descAdic)))
                     End If
                     sb.AppendLine("</td>")
-                    sb.AppendLine("            </tr>")
+                    sb.AppendLine("                      </tr>")
+                    idxPartida += 1
                 Next
 
-                sb.AppendLine("          </tbody>")
-                sb.AppendLine("        </table>")
-                sb.AppendLine("      </div>")
+                sb.AppendLine("                    </tbody>")
+                sb.AppendLine("                  </table>")
+                sb.AppendLine("                </div>")
             Next
 
-            sb.AppendLine("    </div>")
+            sb.AppendLine("              </div>")
         Next
 
-        sb.AppendLine("  </div>")
-
-        ' Pie de página institucional
-        sb.AppendLine("  <div class=""footer"">")
-        sb.AppendLine("    <p style=""margin: 0 0 4px 0; font-weight: 600;"">LFM RPA Robot &bull; Notificación Automática de Partidas Pendientes de Cotizar. Powered by HistoMedic.</p>")
-        sb.AppendLine("    <p style=""margin: 0;"">Este mensaje fue generado automáticamente según la frecuencia programada en configuración general. Por favor no responder a este correo.</p>")
-        sb.AppendLine("  </div>")
-        sb.AppendLine("</div>")
+        sb.AppendLine("            </div>")
+        sb.AppendLine("")
+        sb.AppendLine("            <!-- Pie de página institucional -->")
+        sb.AppendLine("            <div class=""footer"" style=""background-color: #f8fafc; border-top: 1px solid #e2e8f0; padding: 16px 24px; font-size: 11px; color: #64748b; text-align: center;"">")
+        sb.AppendLine("              <p style=""margin: 0 0 4px 0; font-weight: 700; color: #475569;"">LFM RPA Robot &bull; Notificación Automática de Partidas Pendientes de Cotizar. Powered by HistoMedic.</p>")
+        sb.AppendLine("              <p style=""margin: 0; color: #64748b;"">Este mensaje fue generado automáticamente según la frecuencia programada en configuración general. Por favor no responder a este correo.</p>")
+        sb.AppendLine("            </div>")
+        sb.AppendLine("")
+        sb.AppendLine("          </td>")
+        sb.AppendLine("        </tr>")
+        sb.AppendLine("      </table>")
+        sb.AppendLine("      <!--[if (gte mso 9)|(IE)]>")
+        sb.AppendLine("          </td>")
+        sb.AppendLine("        </tr>")
+        sb.AppendLine("      </table>")
+        sb.AppendLine("      <![endif]-->")
+        sb.AppendLine("    </td>")
+        sb.AppendLine("  </tr>")
+        sb.AppendLine("</table>")
         sb.AppendLine("</body>")
         sb.AppendLine("</html>")
-
         Return sb.ToString()
     End Function
 
