@@ -4071,7 +4071,7 @@ intenta_otravz:
     ''' Envía un correo electrónico en formato HTML a múltiples destinatarios usando Chilkat MailMan.
     ''' No muestra cuadros de diálogo interactivos (MsgBox) y registra cualquier error en logs.
     ''' </summary>
-    Private Function EnviarCorreoNotificacionHTML(ByVal destinatarios As String, ByVal asunto As String, ByVal cuerpoHtml As String) As Boolean
+    Private Function EnviarCorreoNotificacionHTML(ByVal destinatarios As String, ByVal asunto As String, ByVal cuerpoHtml As String, Optional ByVal correosCopia As String = "") As Boolean
         Try
             Dim mailman As New Chilkat.MailMan()
             Dim success As Boolean = mailman.UnlockComponent("MAIL87654321_3C7B9122j163")
@@ -4120,6 +4120,17 @@ intenta_otravz:
                     totalAgregados += 1
                 End If
             Next
+
+            ' Agregar correos en copia (CC) si fueron especificados
+            If Not String.IsNullOrWhiteSpace(correosCopia) Then
+                Dim listaCC As String() = correosCopia.Split(separadores, StringSplitOptions.RemoveEmptyEntries)
+                For Each ccRaw As String In listaCC
+                    Dim ccLimpio As String = ccRaw.Trim()
+                    If Not String.IsNullOrWhiteSpace(ccLimpio) AndAlso EsDireccionCorreoValida(ccLimpio) Then
+                        email.AddCC("", ccLimpio)
+                    End If
+                Next
+            End If
 
             If totalAgregados = 0 Then
                 LogEventos.Escribir("Error: No se encontraron destinatarios con formato de correo válido en: " & destinatarios)
@@ -5790,6 +5801,13 @@ intenta_otravz:
             ' Asegurar tabla de bitácora histórica de envíos
             AsegurarTablaLogSeguimientoVentas()
 
+            ' Obtener correos de directivos para envío en copia (CC) desde cat_consultorio
+            Dim correosDirectivos As String = ""
+            Dim dtDirectivos As DataTable = tb_Recordset_MySQL_local("SELECT correos_solo_directivos FROM cat_consultorio LIMIT 1")
+            If dtDirectivos IsNot Nothing AndAlso dtDirectivos.Rows.Count > 0 AndAlso Not IsDBNull(dtDirectivos.Rows(0)("correos_solo_directivos")) Then
+                correosDirectivos = dtDirectivos.Rows(0)("correos_solo_directivos").ToString().Trim()
+            End If
+
             ' 3. Obtener lista de vendedores agrupados con proyectos en seguimiento
             Dim sqlVendedores As String =
                 "SELECT DISTINCT " & _
@@ -5849,12 +5867,12 @@ intenta_otravz:
                 Dim htmlCuerpo As String = GenerarHTMLSeguimientoVendedor(resumen)
                 Dim asunto As String = String.Format("Informe Diario de Seguimiento Comercial - {0} ({1:dd/MM/yyyy})", nomVendedor, DateTime.Now)
 
-                ' Enviar correo HTML mediante Chilkat
-                Dim enviadoExitoso As Boolean = EnviarCorreoNotificacionHTML(resumen.Email, asunto, htmlCuerpo)
+                ' Enviar correo HTML mediante Chilkat con copia a directivos si aplica
+                Dim enviadoExitoso As Boolean = EnviarCorreoNotificacionHTML(resumen.Email, asunto, htmlCuerpo, correosDirectivos)
                 If enviadoExitoso Then
                     totalVendedoresNotificados += 1
-                    AgregarLog(100, String.Format("[Seguimiento Ventas] Notificación enviada a {0} ({1}) - Cotiz. Cliente: {2}, Cotiz. Internas: {3}.",
-                                                  nomVendedor, resumen.Email, resumen.CotizacionesCliente.Count, resumen.CotizacionesInternas.Count))
+                    AgregarLog(100, String.Format("[Seguimiento Ventas] Notificación enviada a {0} ({1}){2} - Cotiz. Cliente: {3}, Cotiz. Internas: {4}.",
+                                                  nomVendedor, resumen.Email, If(Not String.IsNullOrWhiteSpace(correosDirectivos), " [CC: " & correosDirectivos & "]", ""), resumen.CotizacionesCliente.Count, resumen.CotizacionesInternas.Count))
                     RegistrarLogEnvioVentas(cveVendedor, nomVendedor, resumen.Email, resumen.CotizacionesCliente.Count, resumen.CotizacionesInternas.Count, True, "Enviado con éxito")
                 Else
                     AgregarLog(500, String.Format("[Seguimiento Ventas] Error al enviar correo a {0} ({1}).", nomVendedor, resumen.Email))
