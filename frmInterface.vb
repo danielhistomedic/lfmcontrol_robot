@@ -50,6 +50,12 @@ Public Class frmInterface
     Private _procesandoInformeProyectos As Boolean = False
     Private _fechaUltimoEnvioInformeProyectos As Nullable(Of DateTime) = Nothing
 
+    ' =========================================================================
+    ' Control de Notificación Diaria de Seguimiento a Vendedores (Cotizaciones y Cotizaciones Internas)
+    ' =========================================================================
+    Private _procesandoSeguimientoVentas As Boolean = False
+    Private _fechaUltimoEnvioSeguimientoVentas As Nullable(Of DateTime) = Nothing
+
 #Region "Propiedades"
 
     Protected str_FTP_USUARIO As String
@@ -468,6 +474,11 @@ Public Class frmInterface
                 ' Notificación Diaria del Informe Ejecutivo de Seguimiento de Proyectos
                 If Not _procesandoInformeProyectos Then
                     Me.NotificarInformeEjecutivoProyectos()
+                End If
+
+                ' Notificación Diaria de Seguimiento a Vendedores (Cotizaciones y Cotizaciones Internas a las 8:15 AM de lunes a viernes)
+                If Not _procesandoSeguimientoVentas Then
+                    Me.NotificarSeguimientoCotizacionesVentas()
                 End If
             Catch exNotif As Exception
                 LogEventos.Escribir("Error en ciclo de notificaciones automáticas: " & exNotif.Message)
@@ -5665,6 +5676,565 @@ intenta_otravz:
     End Function
 
 #End Region
+
+#End Region
+
+#Region "Notificaciones Diarias de Seguimiento de Cotizaciones a Vendedores"
+
+    ''' <summary>
+    ''' Representa un elemento de cotización pendiente asignado a un vendedor (Cliente o Interna).
+    ''' </summary>
+    Public Class ItemCotizacionSeguimientoVendedor
+        Public Property VentaId As Integer
+        Public Property ProyectoId As String
+        Public Property Titulo As String
+        Public Property ClienteNombre As String
+        Public Property FolioCotizacion As String
+        Public Property FechaBase As DateTime
+        Public Property FechaVigencia As Nullable(Of DateTime)
+        Public Property Dias As Integer
+        Public Property Semaforo As String
+        Public Property TotalMonto As Double
+        Public Property MonedaSiglas As String
+        Public Property QueEstaPendiente As String
+        Public Property Responsable As String
+        Public Property ProximaAccion As String
+        Public Property BadgeDiasTexto As String
+        Public Property EsCotizacionInterna As Boolean
+    End Class
+
+    ''' <summary>
+    ''' Agrupa los datos del vendedor y sus cotizaciones clasificadas por sección.
+    ''' </summary>
+    Public Class ResumenVendedorSeguimiento
+        Public Property VendedorClave As String
+        Public Property VendedorNombre As String
+        Public Property Email As String
+        Public Property CotizacionesCliente As New List(Of ItemCotizacionSeguimientoVendedor)()
+        Public Property CotizacionesInternas As New List(Of ItemCotizacionSeguimientoVendedor)()
+
+        Public ReadOnly Property TotalPendientes As Integer
+            Get
+                Return CotizacionesCliente.Count + CotizacionesInternas.Count
+            End Get
+        End Property
+    End Class
+
+    ''' <summary>
+    ''' Asegura la creación de la tabla de control histórico para registrar los envíos diarios a vendedores.
+    ''' </summary>
+    Private Sub AsegurarTablaLogSeguimientoVentas()
+        Try
+            Dim sqlCreate As String =
+                "CREATE TABLE IF NOT EXISTS tb_seguimiento_ventas_envio_log (" & _
+                "  id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, " & _
+                "  fecha DATE NOT NULL, " & _
+                "  ccveusuario_vendedor VARCHAR(45) NOT NULL, " & _
+                "  vendedor_nombre VARCHAR(150) NOT NULL, " & _
+                "  email VARCHAR(150) NOT NULL, " & _
+                "  total_cotizaciones_cliente INT NOT NULL DEFAULT 0, " & _
+                "  total_cotizaciones_internas INT NOT NULL DEFAULT 0, " & _
+                "  enviado TINYINT(1) NOT NULL DEFAULT 0, " & _
+                "  fchregistro DATETIME NOT NULL, " & _
+                "  mensaje_error TEXT, " & _
+                "  INDEX idx_fecha (fecha), " & _
+                "  INDEX idx_vendedor (ccveusuario_vendedor) " & _
+                ");"
+            Using cmm As New MySqlConnector.MySqlCommand(sqlCreate, cx_MySQL_local)
+                cmm.ExecuteNonQuery()
+            End Using
+        Catch ex As Exception
+            LogEventos.Escribir("Error en AsegurarTablaLogSeguimientoVentas: " & ex.Message)
+        End Try
+    End Sub
+
+    ''' <summary>
+    ''' Rutina matutina programada para enviarse de lunes a viernes a las 8:15 AM
+    ''' a cada vendedor con el seguimiento individualizado de:
+    ''' 1) Cotizaciones de clientes pendientes de recibir Orden de Compra (Estatus 5).
+    ''' 2) Cotizaciones internas pendientes de generar cotización a cliente (Estatus 4).
+    ''' </summary>
+    Public Sub NotificarSeguimientoCotizacionesVentas(Optional ByVal forzarEnvio As Boolean = False)
+        If _procesandoSeguimientoVentas Then Return
+
+        ' 1. Omitir sábados y domingos (salvo si es forzado manualmente para pruebas)
+        If Not forzarEnvio Then
+            If DateTime.Now.DayOfWeek = DayOfWeek.Saturday OrElse DateTime.Now.DayOfWeek = DayOfWeek.Sunday Then
+                Return
+            End If
+
+            ' 2. Validar horario de envío diario (a partir de las 08:15 AM)
+            Dim horaProgramada As New TimeSpan(8, 15, 0)
+            If DateTime.Now.TimeOfDay < horaProgramada Then
+                Return
+            End If
+
+            ' Validar que no se haya ejecutado ya el día de hoy
+            If _fechaUltimoEnvioSeguimientoVentas.HasValue AndAlso _fechaUltimoEnvioSeguimientoVentas.Value.Date = DateTime.Now.Date Then
+                Return
+            End If
+        End If
+
+        _procesandoSeguimientoVentas = True
+        Try
+            If cx_MySQL_local.State <> ConnectionState.Open Then
+                Try
+                    If cx_MySQL_local.State = ConnectionState.Broken Then cx_MySQL_local.Close()
+                    cx_MySQL_local.Open()
+                Catch exConn As Exception
+                    AgregarLog(500, "[Seguimiento Ventas] Error al conectar a la BD local: " & exConn.Message)
+                    Return
+                End Try
+            End If
+
+            ' Asegurar tabla de bitácora histórica de envíos
+            AsegurarTablaLogSeguimientoVentas()
+
+            ' 3. Obtener lista de vendedores agrupados con proyectos en seguimiento
+            Dim sqlVendedores As String =
+                "SELECT DISTINCT " & _
+                "  v.ccveusuario_vendedor, " & _
+                "  COALESCE(TRIM(CONCAT_WS(' ', m.cnombre, m.cpriapellido, m.csegapellido)), v.ccveusuario_vendedor, 'SIN ASIGNAR') AS vendedor_nombre, " & _
+                "  COALESCE(m.email, '') AS email " & _
+                "FROM tb_ventas v " & _
+                "LEFT JOIN cat_medico m ON v.ccveusuario_vendedor = m.ccvemedico " & _
+                "WHERE v.ccveusuario_vendedor IS NOT NULL " & _
+                "  AND v.ccveusuario_vendedor <> '' " & _
+                "  AND v.activo = 'ACTIVO' " & _
+                "  AND v.fecha >= '2026-08-24' " & _
+                "  AND v.estatus_proyecto_id IN (4, 5) " & _
+                "ORDER BY vendedor_nombre;"
+
+            Dim dtVendedores As DataTable = tb_Recordset_MySQL_local(sqlVendedores)
+            If dtVendedores Is Nothing OrElse dtVendedores.Rows.Count = 0 Then
+                LogEventos.Escribir("[Seguimiento Ventas] No se encontraron vendedores con cotizaciones pendientes (a partir de 2026-08-24).")
+                Return
+            End If
+
+            Dim totalVendedoresNotificados As Integer = 0
+
+            For Each rVend As DataRow In dtVendedores.Rows
+                Dim cveVendedor As String = rVend("ccveusuario_vendedor").ToString().Trim()
+                Dim nomVendedor As String = rVend("vendedor_nombre").ToString().Trim()
+                Dim emailVendedor As String = rVend("email").ToString().Trim()
+
+                ' Validar si hoy ya se le envió su reporte a este vendedor específico
+                If Not forzarEnvio Then
+                    Dim sqlCheckVend As String = String.Format(
+                        "SELECT COUNT(*) FROM tb_seguimiento_ventas_envio_log WHERE fecha = CURDATE() AND ccveusuario_vendedor = '{0}' AND enviado = 1",
+                        cveVendedor.Replace("'", "''"))
+                    Dim dtCheck As DataTable = tb_Recordset_MySQL_local(sqlCheckVend)
+                    If dtCheck IsNot Nothing AndAlso dtCheck.Rows.Count > 0 AndAlso Convert.ToInt32(dtCheck.Rows(0)(0)) > 0 Then
+                        ' Ya enviado hoy a este vendedor, continuar con el siguiente
+                        Continue For
+                    End If
+                End If
+
+                ' Cargar datos y cotizaciones del vendedor
+                Dim resumen As ResumenVendedorSeguimiento = ObtenerResumenCotizacionesVendedor(cveVendedor, nomVendedor, emailVendedor)
+
+                ' Si no tiene cotizaciones pendientes en ninguna sección, omitir envío
+                If resumen.TotalPendientes = 0 Then
+                    Continue For
+                End If
+
+                ' Validar que cuente con correo válido en cat_medico
+                If String.IsNullOrWhiteSpace(resumen.Email) OrElse Not EsDireccionCorreoValida(resumen.Email) Then
+                    AgregarLog(500, String.Format("[Seguimiento Ventas] Vendedor {0} ({1}) no tiene correo válido en cat_medico: '{2}'.", nomVendedor, cveVendedor, resumen.Email))
+                    RegistrarLogEnvioVentas(cveVendedor, nomVendedor, resumen.Email, resumen.CotizacionesCliente.Count, resumen.CotizacionesInternas.Count, False, "Correo inválido o no configurado en cat_medico")
+                    Continue For
+                End If
+
+                ' Generar HTML del informe individualizado
+                Dim htmlCuerpo As String = GenerarHTMLSeguimientoVendedor(resumen)
+                Dim asunto As String = String.Format("Informe Diario de Seguimiento Comercial - {0} ({1:dd/MM/yyyy})", nomVendedor, DateTime.Now)
+
+                ' Enviar correo HTML mediante Chilkat
+                Dim enviadoExitoso As Boolean = EnviarCorreoNotificacionHTML(resumen.Email, asunto, htmlCuerpo)
+                If enviadoExitoso Then
+                    totalVendedoresNotificados += 1
+                    AgregarLog(100, String.Format("[Seguimiento Ventas] Notificación enviada a {0} ({1}) - Cotiz. Cliente: {2}, Cotiz. Internas: {3}.",
+                                                  nomVendedor, resumen.Email, resumen.CotizacionesCliente.Count, resumen.CotizacionesInternas.Count))
+                    RegistrarLogEnvioVentas(cveVendedor, nomVendedor, resumen.Email, resumen.CotizacionesCliente.Count, resumen.CotizacionesInternas.Count, True, "Enviado con éxito")
+                Else
+                    AgregarLog(500, String.Format("[Seguimiento Ventas] Error al enviar correo a {0} ({1}).", nomVendedor, resumen.Email))
+                    RegistrarLogEnvioVentas(cveVendedor, nomVendedor, resumen.Email, resumen.CotizacionesCliente.Count, resumen.CotizacionesInternas.Count, False, "Error al enviar mediante Chilkat")
+                End If
+            Next
+
+            _fechaUltimoEnvioSeguimientoVentas = DateTime.Now
+            LogEventos.Escribir(String.Format("[Seguimiento Ventas] Ciclo completado. Vendedores notificados hoy: {0}.", totalVendedoresNotificados))
+
+        Catch ex As Exception
+            AgregarLog(500, "Error en NotificarSeguimientoCotizacionesVentas: " & ex.Message)
+            LogEventos.Escribir("Error en NotificarSeguimientoCotizacionesVentas: " & ex.Message & " - Stack: " & ex.StackTrace)
+        Finally
+            _procesandoSeguimientoVentas = False
+        End Try
+    End Sub
+
+    ''' <summary>
+    ''' Registra en tb_seguimiento_ventas_envio_log el resultado del envío diario a un vendedor.
+    ''' </summary>
+    Private Sub RegistrarLogEnvioVentas(ByVal cveVendedor As String, ByVal nomVendedor As String, ByVal email As String,
+                                        ByVal totalCliente As Integer, ByVal totalInternas As Integer, ByVal enviado As Boolean, ByVal mensajeError As String)
+        Try
+            Dim sqlInsert As String = String.Format(
+                "INSERT INTO tb_seguimiento_ventas_envio_log (fecha, ccveusuario_vendedor, vendedor_nombre, email, total_cotizaciones_cliente, total_cotizaciones_internas, enviado, fchregistro, mensaje_error) " & _
+                "VALUES (CURDATE(), '{0}', '{1}', '{2}', {3}, {4}, {5}, NOW(), '{6}');",
+                cveVendedor.Replace("'", "''"), nomVendedor.Replace("'", "''"), email.Replace("'", "''"),
+                totalCliente, totalInternas, If(enviado, 1, 0), mensajeError.Replace("'", "''"))
+            Using cmm As New MySqlConnector.MySqlCommand(sqlInsert, cx_MySQL_local)
+                cmm.ExecuteNonQuery()
+            End Using
+        Catch ex As Exception
+            LogEventos.Escribir("Error en RegistrarLogEnvioVentas: " & ex.Message)
+        End Try
+    End Sub
+
+    ''' <summary>
+    ''' Consulta y clasifica las cotizaciones pendientes de un vendedor en:
+    ''' 1) Cotizaciones de clientes pendientes de orden de compra (Estatus 5).
+    ''' 2) Cotizaciones internas pendientes de cotización a cliente (Estatus 4).
+    ''' </summary>
+    Private Function ObtenerResumenCotizacionesVendedor(ByVal cveVendedor As String, ByVal nomVendedor As String, ByVal email As String) As ResumenVendedorSeguimiento
+        Dim resumen As New ResumenVendedorSeguimiento()
+        resumen.VendedorClave = cveVendedor
+        resumen.VendedorNombre = nomVendedor
+        resumen.Email = email
+
+        ' -------------------------------------------------------------
+        ' Sección 1: Cotizaciones de Clientes Pendientes de Orden de Compra (Estatus 5)
+        ' -------------------------------------------------------------
+        Dim sqlSec1 As String = String.Format(
+            "SELECT " & _
+            "  v.id AS venta_id, " & _
+            "  COALESCE(v.proyecto_id, '') AS proyecto_id, " & _
+            "  COALESCE(v.titulo, '') AS titulo, " & _
+            "  v.fecha AS fecha_proyecto, " & _
+            "  COALESCE(cli.nombre_comercial, cli.razon_social, 'CLIENTE NO DEFINIDO') AS cliente_nombre, " & _
+            "  COALESCE(cc.folio_cotizacion, '') AS folio_cotizacion, " & _
+            "  COALESCE(cc.fecha, v.fecha) AS fecha_cotizacion, " & _
+            "  cc.fecha_vigencia, " & _
+            "  COALESCE(NULLIF(cc.total, 0), v.total, 0) AS total_monto, " & _
+            "  COALESCE(tc.siglas, 'USD') AS moneda_siglas " & _
+            "FROM tb_ventas v " & _
+            "LEFT JOIN cat_clientes cli ON v.cliente_id = cli.id " & _
+            "LEFT JOIN tb_ventas_cotizacion_cliente cc ON cc.id = ( " & _
+            "    SELECT MAX(id) FROM tb_ventas_cotizacion_cliente " & _
+            "    WHERE venta_id = v.id AND activo = 1 " & _
+            ") " & _
+            "LEFT JOIN cat_tipos_cambio tc ON COALESCE(cc.moneda_id, v.moneda_id) = tc.id " & _
+            "WHERE v.ccveusuario_vendedor = '{0}' " & _
+            "  AND v.estatus_proyecto_id = 5 " & _
+            "  AND v.activo = 'ACTIVO' " & _
+            "  AND v.fecha >= '2026-08-24' " & _
+            "ORDER BY cc.fecha_vigencia ASC, total_monto DESC;", cveVendedor.Replace("'", "''"))
+
+        Dim dtSec1 As DataTable = tb_Recordset_MySQL_local(sqlSec1)
+        If dtSec1 IsNot Nothing Then
+            For Each r As DataRow In dtSec1.Rows
+                Dim item As New ItemCotizacionSeguimientoVendedor()
+                item.EsCotizacionInterna = False
+                item.VentaId = Convert.ToInt32(r("venta_id"))
+                item.ProyectoId = r("proyecto_id").ToString().Trim()
+                item.Titulo = r("titulo").ToString().Trim()
+                item.ClienteNombre = r("cliente_nombre").ToString().Trim()
+                item.FolioCotizacion = r("folio_cotizacion").ToString().Trim()
+                item.TotalMonto = If(Not IsDBNull(r("total_monto")), Convert.ToDouble(r("total_monto")), 0)
+                item.MonedaSiglas = If(Not IsDBNull(r("moneda_siglas")), r("moneda_siglas").ToString().Trim(), "USD")
+                item.Responsable = "Ventas (" & nomVendedor & ")"
+                item.ProximaAccion = "Seguimiento comercial con cliente para cierre de venta y recepción de OC"
+
+                If Not IsDBNull(r("fecha_vigencia")) Then
+                    Dim fVig As DateTime
+                    If DateTime.TryParse(r("fecha_vigencia").ToString(), fVig) Then
+                        item.FechaVigencia = fVig
+                    End If
+                End If
+
+                If item.FechaVigencia.HasValue Then
+                    Dim dRest As Integer = CInt(Math.Floor((item.FechaVigencia.Value.Date - DateTime.Now.Date).TotalDays))
+                    item.Dias = dRest
+                    If dRest < 0 Then
+                        item.Semaforo = "ROJO"
+                        item.BadgeDiasTexto = String.Format("&#9888; Vencido hace {0} día(s)", Math.Abs(dRest))
+                        item.QueEstaPendiente = String.Format("Vigencia/Respuesta de cotización vencida hace {0} día(s) (Vigencia: {1:dd/MM/yy})", Math.Abs(dRest), item.FechaVigencia.Value)
+                    ElseIf dRest = 0 Then
+                        item.Semaforo = "ROJO"
+                        item.BadgeDiasTexto = "&#9888; Vence HOY para respuesta"
+                        item.QueEstaPendiente = String.Format("Vigencia/Respuesta de cotización vence HOY ({0:dd/MM/yy})", item.FechaVigencia.Value)
+                    ElseIf dRest = 1 Then
+                        item.Semaforo = "ROJO"
+                        item.BadgeDiasTexto = "&#9203; Falta 1 día para respuesta"
+                        item.QueEstaPendiente = String.Format("Falta 1 día para recibir respuesta del cliente (Vigencia: {0:dd/MM/yy})", item.FechaVigencia.Value)
+                    ElseIf dRest <= 10 Then
+                        item.Semaforo = "ROJO"
+                        item.BadgeDiasTexto = String.Format("&#9203; Faltan {0} días para respuesta", dRest)
+                        item.QueEstaPendiente = String.Format("Faltan {0} días para recibir respuesta del cliente (Vigencia: {1:dd/MM/yy})", dRest, item.FechaVigencia.Value)
+                    ElseIf dRest <= 20 Then
+                        item.Semaforo = "AMARILLO"
+                        item.BadgeDiasTexto = String.Format("&#9203; Faltan {0} días para respuesta", dRest)
+                        item.QueEstaPendiente = String.Format("Faltan {0} días para recibir respuesta del cliente (Vigencia: {1:dd/MM/yy})", dRest, item.FechaVigencia.Value)
+                    Else
+                        item.Semaforo = "VERDE"
+                        item.BadgeDiasTexto = String.Format("&#9203; Faltan {0} días para respuesta", dRest)
+                        item.QueEstaPendiente = String.Format("Cotización a cliente en tiempo (Faltan {0} días, Vigencia: {1:dd/MM/yy})", dRest, item.FechaVigencia.Value)
+                    End If
+                Else
+                    item.Semaforo = "VERDE"
+                    item.BadgeDiasTexto = "En plazo"
+                    item.QueEstaPendiente = "Cotización elaborada al cliente en tiempo"
+                End If
+
+                resumen.CotizacionesCliente.Add(item)
+            Next
+        End If
+
+        ' -------------------------------------------------------------
+        ' Sección 2: Cotizaciones Internas Pendientes de Cotizar a Cliente (Estatus 4)
+        ' -------------------------------------------------------------
+        Dim sqlSec2 As String = String.Format(
+            "SELECT " & _
+            "  v.id AS venta_id, " & _
+            "  COALESCE(v.proyecto_id, '') AS proyecto_id, " & _
+            "  COALESCE(v.titulo, '') AS titulo, " & _
+            "  v.fecha AS fecha_proyecto, " & _
+            "  COALESCE(cli.nombre_comercial, cli.razon_social, 'CLIENTE NO DEFINIDO') AS cliente_nombre, " & _
+            "  COALESCE(ci.folio_cotizacion, '') AS folio_cotizacion, " & _
+            "  COALESCE(ci.fecha, v.fecha) AS fecha_cotizacion, " & _
+            "  COALESCE(ci.fchregistro, v.fchregistroactualiza, v.fchregistro) AS fecha_base_interna, " & _
+            "  COALESCE(NULLIF(ci.total, 0), v.total, 0) AS total_monto, " & _
+            "  COALESCE(tc.siglas, 'USD') AS moneda_siglas " & _
+            "FROM tb_ventas v " & _
+            "LEFT JOIN cat_clientes cli ON v.cliente_id = cli.id " & _
+            "LEFT JOIN tb_compras_cotizacion_interna ci ON ci.id = ( " & _
+            "    SELECT MAX(id) FROM tb_compras_cotizacion_interna " & _
+            "    WHERE venta_id = v.id " & _
+            ") " & _
+            "LEFT JOIN cat_tipos_cambio tc ON COALESCE(ci.moneda_id, v.moneda_id) = tc.id " & _
+            "WHERE v.ccveusuario_vendedor = '{0}' " & _
+            "  AND v.estatus_proyecto_id = 4 " & _
+            "  AND v.activo = 'ACTIVO' " & _
+            "  AND v.fecha >= '2026-08-24' " & _
+            "ORDER BY fecha_base_interna ASC, total_monto DESC;", cveVendedor.Replace("'", "''"))
+
+        Dim dtSec2 As DataTable = tb_Recordset_MySQL_local(sqlSec2)
+        If dtSec2 IsNot Nothing Then
+            For Each r As DataRow In dtSec2.Rows
+                Dim item As New ItemCotizacionSeguimientoVendedor()
+                item.EsCotizacionInterna = True
+                item.VentaId = Convert.ToInt32(r("venta_id"))
+                item.ProyectoId = r("proyecto_id").ToString().Trim()
+                item.Titulo = r("titulo").ToString().Trim()
+                item.ClienteNombre = r("cliente_nombre").ToString().Trim()
+                item.FolioCotizacion = r("folio_cotizacion").ToString().Trim()
+                item.TotalMonto = If(Not IsDBNull(r("total_monto")), Convert.ToDouble(r("total_monto")), 0)
+                item.MonedaSiglas = If(Not IsDBNull(r("moneda_siglas")), r("moneda_siglas").ToString().Trim(), "USD")
+                item.Responsable = "Ventas (" & nomVendedor & ")"
+                item.ProximaAccion = "Generar y enviar formalmente la cotización de venta al cliente a la brevedad"
+
+                Dim fBase As DateTime = DateTime.Now
+                If Not IsDBNull(r("fecha_base_interna")) AndAlso DateTime.TryParse(r("fecha_base_interna").ToString(), fBase) Then
+                    item.FechaBase = fBase
+                Else
+                    item.FechaBase = DateTime.Now
+                End If
+
+                Dim dTrans As Integer = CInt(Math.Floor((DateTime.Now.Date - item.FechaBase.Date).TotalDays))
+                If dTrans < 0 Then dTrans = 0
+                item.Dias = dTrans
+
+                If dTrans <= 1 Then
+                    item.Semaforo = "VERDE"
+                    item.BadgeDiasTexto = If(dTrans = 0, "&#9203; Elaborada HOY", "&#9203; Elaborada hace 1 día")
+                    item.QueEstaPendiente = String.Format("Cotización interna lista desde el {0:dd/MM/yyyy}. Elaborada recientemente, pendiente generar cotización a cliente.", item.FechaBase)
+                ElseIf dTrans <= 3 Then
+                    item.Semaforo = "AMARILLO"
+                    item.BadgeDiasTexto = String.Format("&#9203; Han transcurrido {0} días sin cotizar a cliente", dTrans)
+                    item.QueEstaPendiente = String.Format("Cotización interna lista desde el {0:dd/MM/yyyy}. Han transcurrido {1} días sin generar la cotización formal al cliente.", item.FechaBase, dTrans)
+                Else
+                    item.Semaforo = "ROJO"
+                    item.BadgeDiasTexto = String.Format("&#9888; Han transcurrido {0} días sin cotizar a cliente", dTrans)
+                    item.QueEstaPendiente = String.Format("Cotización interna lista desde el {0:dd/MM/yyyy}. Han transcurrido {1} días sin generar la cotización formal al cliente (Atención urgente).", item.FechaBase, dTrans)
+                End If
+
+                resumen.CotizacionesInternas.Add(item)
+            Next
+        End If
+
+        Return resumen
+    End Function
+
+    ''' <summary>
+    ''' Genera la tarjeta HTML individual para una cotización (Sección 1 o 2), con diseño idéntico a la imagen provista.
+    ''' </summary>
+    Private Function GenerarTarjetaSeguimientoHtml(ByVal item As ItemCotizacionSeguimientoVendedor) As String
+        Dim badgeClass As String = If(item.Semaforo = "ROJO", "badge-r", If(item.Semaforo = "AMARILLO", "badge-a", "badge-v"))
+        Dim badgeStyle As String = If(item.Semaforo = "ROJO",
+            "display: inline-block; background-color: #fee2e2; color: #b91c1c !important; border: 1px solid #fca5a5; padding: 2px 7px; border-radius: 10px; font-weight: 700; font-size: 11px;",
+            If(item.Semaforo = "AMARILLO",
+                "display: inline-block; background-color: #fef9c3; color: #a16207 !important; border: 1px solid #fde047; padding: 2px 7px; border-radius: 10px; font-weight: 700; font-size: 11px;",
+                "display: inline-block; background-color: #dcfce7; color: #15803d !important; border: 1px solid #86efac; padding: 2px 7px; border-radius: 10px; font-weight: 700; font-size: 11px;"))
+        Dim borderCol As String = If(item.Semaforo = "ROJO", "#dc2626", If(item.Semaforo = "AMARILLO", "#d97706", "#16a34a"))
+        Dim bgCol As String = If(item.Semaforo = "ROJO", "#fff1f2", If(item.Semaforo = "AMARILLO", "#fffbeb", "#f0fdf4"))
+
+        Dim bgDias As String = If(item.Semaforo = "ROJO", "#fee2e2", If(item.Semaforo = "AMARILLO", "#fef9c3", "#dcfce7"))
+        Dim colDias As String = If(item.Semaforo = "ROJO", "#b91c1c", If(item.Semaforo = "AMARILLO", "#a16207", "#15803d"))
+        Dim borderDias As String = If(item.Semaforo = "ROJO", "#fca5a5", If(item.Semaforo = "AMARILLO", "#fde047", "#86efac"))
+
+        Dim sb As New System.Text.StringBuilder()
+        sb.AppendLine(String.Format("    <div class=""card-prio"" style=""border-left: 5px solid {0}; background-color: {1}; padding: 12px 16px; margin-bottom: 12px; border-radius: 4px; border-top: 1px solid #e2e8f0; border-right: 1px solid #e2e8f0; border-bottom: 1px solid #e2e8f0;"">", borderCol, bgCol))
+        sb.AppendLine(String.Format("      <table role=""presentation"" border=""0"" cellpadding=""0"" cellspacing=""0"" width=""100%"" bgcolor=""{0}"" style=""width: 100%; border-collapse: collapse; background-color: {0};"">", bgCol))
+        sb.AppendLine("        <tr>")
+        sb.AppendLine(String.Format("          <td style=""font-size: 13px; font-weight: 700; color: #0f172a;""><span class=""{0}"" style=""{1}"">&#9679; {2}</span> &nbsp; Folio: <span style=""font-family: Consolas, monospace;"">{3}</span> &bull; {4} &nbsp;<span style=""display: inline-block; background-color: {5}; color: {6} !important; border: 1px solid {7}; padding: 2px 8px; border-radius: 10px; font-weight: 700; font-size: 11px; vertical-align: middle;"">{8}</span></td>",
+                                    badgeClass, badgeStyle, item.Semaforo, item.ProyectoId, System.Net.WebUtility.HtmlEncode(item.ClienteNombre), bgDias, colDias, borderDias, item.BadgeDiasTexto))
+        sb.AppendLine(String.Format("          <td style=""text-align: right; font-weight: 800; font-size: 13px; color: #0f172a; white-space: nowrap;"">{0:C2} {1}</td>", item.TotalMonto, item.MonedaSiglas))
+        sb.AppendLine("        </tr>")
+        sb.AppendLine("      </table>")
+        sb.AppendLine(String.Format("      <div style=""font-size: 12px; color: #334155; margin: 5px 0;""><strong>Descripción:</strong> {0}</div>", System.Net.WebUtility.HtmlEncode(item.Titulo)))
+        sb.AppendLine("      <div class=""card-prio-meta"" style=""font-size: 11px; color: #475569; line-height: 1.5;"">")
+        sb.AppendLine(String.Format("        &bull; <strong>Qué está pendiente:</strong> <span style=""color: {0}; font-weight: 600;"">{1}</span><br/>", If(item.Semaforo = "ROJO", "#991b1b", If(item.Semaforo = "AMARILLO", "#a16207", "#15803d")), System.Net.WebUtility.HtmlEncode(item.QueEstaPendiente)))
+        sb.AppendLine(String.Format("        &bull; <strong>Quién es responsable:</strong> <span style=""color: #0f172a; font-weight: 600;"">{0}</span><br/>", System.Net.WebUtility.HtmlEncode(item.Responsable)))
+        sb.AppendLine(String.Format("        &bull; <strong>Acción recomendada:</strong> <span style=""color: #1e3a8a; font-weight: 600;"">{0}</span>", System.Net.WebUtility.HtmlEncode(item.ProximaAccion)))
+        sb.AppendLine("      </div>")
+        sb.AppendLine("    </div>")
+
+        Return sb.ToString()
+    End Function
+
+    ''' <summary>
+    ''' Genera el cuerpo completo HTML del informe individualizado para el vendedor.
+    ''' </summary>
+    Private Function GenerarHTMLSeguimientoVendedor(ByVal resumen As ResumenVendedorSeguimiento) As String
+        Dim sb As New System.Text.StringBuilder()
+
+        Dim totalCliente As Integer = resumen.CotizacionesCliente.Count
+        Dim totalInternas As Integer = resumen.CotizacionesInternas.Count
+
+        Dim todasLasCotizaciones = resumen.CotizacionesCliente.Concat(resumen.CotizacionesInternas).ToList()
+        Dim rojosCount As Integer = todasLasCotizaciones.Where(Function(x) x.Semaforo = "ROJO").Count()
+        Dim amarillosCount As Integer = todasLasCotizaciones.Where(Function(x) x.Semaforo = "AMARILLO").Count()
+        Dim verdesCount As Integer = todasLasCotizaciones.Where(Function(x) x.Semaforo = "VERDE").Count()
+
+        Dim totalUSD As Double = todasLasCotizaciones.Where(Function(x) x.MonedaSiglas.Equals("USD", StringComparison.OrdinalIgnoreCase)).Sum(Function(x) x.TotalMonto)
+        Dim totalMXN As Double = todasLasCotizaciones.Where(Function(x) Not x.MonedaSiglas.Equals("USD", StringComparison.OrdinalIgnoreCase)).Sum(Function(x) x.TotalMonto)
+
+        sb.AppendLine("<!DOCTYPE html>")
+        sb.AppendLine("<html>")
+        sb.AppendLine("<head>")
+        sb.AppendLine("<meta http-equiv=""Content-Type"" content=""text/html; charset=utf-8"" />")
+        sb.AppendLine("<meta name=""viewport"" content=""width=device-width, initial-scale=1.0"" />")
+        sb.AppendLine("<style type=""text/css"">")
+        sb.AppendLine("  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f1f5f9; margin: 0; padding: 0; color: #1e293b; }")
+        sb.AppendLine("  .wrapper-table { width: 100%; background-color: #f1f5f9; border-collapse: collapse; }")
+        sb.AppendLine("  .main-card { max-width: 960px; margin: 0 auto; background-color: #ffffff; border-radius: 8px; overflow: hidden; border: 1px solid #cbd5e1; }")
+        sb.AppendLine("  .main-header { background-color: #1e40af; background: linear-gradient(135deg, #1e40af 0%, #3b82f6 100%); color: #ffffff; padding: 22px 28px; text-align: left; }")
+        sb.AppendLine("  .main-header h1 { margin: 0 0 6px 0; font-size: 20px; font-weight: 800; letter-spacing: -0.5px; color: #ffffff !important; }")
+        sb.AppendLine("  .main-header p { margin: 0; font-size: 13px; color: #dbeafe !important; }")
+        sb.AppendLine("  .kpi-banner { width: 100%; border-collapse: collapse; background-color: #f8fafc; border-bottom: 2px solid #e2e8f0; text-align: center; }")
+        sb.AppendLine("  .kpi-cell { padding: 12px 10px; border-right: 1px solid #e2e8f0; }")
+        sb.AppendLine("  .kpi-label { font-size: 10px; text-transform: uppercase; font-weight: 700; letter-spacing: 0.5px; color: #64748b; margin-bottom: 4px; }")
+        sb.AppendLine("  .kpi-value { font-size: 18px; font-weight: 800; }")
+        sb.AppendLine("  .kpi-val-tot { color: #1e293b; }")
+        sb.AppendLine("  .kpi-val-grn { color: #15803d; }")
+        sb.AppendLine("  .kpi-val-yel { color: #b45309; }")
+        sb.AppendLine("  .kpi-val-red { color: #b91c1c; }")
+        sb.AppendLine("  .kpi-val-mto { color: #0284c7; font-size: 13px; }")
+        sb.AppendLine("  .container { padding: 20px 24px; background-color: #ffffff; }")
+        sb.AppendLine("  .sec-heading { font-size: 15px; font-weight: 700; color: #1e3a8a; margin: 24px 0 8px 0; padding-bottom: 6px; border-bottom: 2px solid #e2e8f0; }")
+        sb.AppendLine("  .sec-subtext { font-size: 12px; color: #64748b; margin: 0 0 14px 0; }")
+        sb.AppendLine("  .badge-v { display: inline-block; background-color: #dcfce7; color: #15803d; border: 1px solid #86efac; padding: 2px 7px; border-radius: 10px; font-weight: 700; font-size: 11px; }")
+        sb.AppendLine("  .badge-a { display: inline-block; background-color: #fef9c3; color: #a16207; border: 1px solid #fde047; padding: 2px 7px; border-radius: 10px; font-weight: 700; font-size: 11px; }")
+        sb.AppendLine("  .badge-r { display: inline-block; background-color: #fee2e2; color: #b91c1c; border: 1px solid #fca5a5; padding: 2px 7px; border-radius: 10px; font-weight: 700; font-size: 11px; }")
+        sb.AppendLine("  .card-prio { border-left: 5px solid #dc2626; background-color: #fff1f2; padding: 12px 16px; margin-bottom: 12px; border-radius: 4px; border-top: 1px solid #e2e8f0; border-right: 1px solid #e2e8f0; border-bottom: 1px solid #e2e8f0; }")
+        sb.AppendLine("  .card-prio-meta { font-size: 11px; color: #475569; line-height: 1.5; }")
+        sb.AppendLine("  .footer { background-color: #f8fafc; border-top: 1px solid #e2e8f0; padding: 16px 24px; font-size: 11px; color: #64748b; text-align: center; }")
+        sb.AppendLine("</style>")
+        sb.AppendLine("</head>")
+        sb.AppendLine("<body style=""margin: 0; padding: 0; background-color: #f1f5f9; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #1e293b;"">")
+        sb.AppendLine("<table role=""presentation"" border=""0"" cellpadding=""0"" cellspacing=""0"" width=""100%"" bgcolor=""#f1f5f9"" class=""wrapper-table"" style=""width: 100%; border-collapse: collapse; background-color: #f1f5f9; margin: 0; padding: 0;"">")
+        sb.AppendLine("  <tr>")
+        sb.AppendLine("    <td align=""center"" style=""padding: 16px 8px; background-color: #f1f5f9;"">")
+        sb.AppendLine("      <table role=""presentation"" align=""center"" border=""0"" cellpadding=""0"" cellspacing=""0"" width=""100%"" bgcolor=""#ffffff"" class=""main-card"" style=""max-width: 960px; width: 100%; margin: 0 auto; background-color: #ffffff; border-radius: 8px; border: 1px solid #cbd5e1; border-collapse: separate; overflow: hidden;"">")
+        sb.AppendLine("        <tr>")
+        sb.AppendLine("          <td align=""left"" bgcolor=""#ffffff"" style=""background-color: #ffffff; padding: 0;"">")
+        sb.AppendLine("")
+        sb.AppendLine("            <!-- 1. Header principal corporativo -->")
+        sb.AppendLine("            <table role=""presentation"" border=""0"" cellpadding=""0"" cellspacing=""0"" width=""100%"" bgcolor=""#1e40af"" class=""main-header"" style=""width: 100%; border-collapse: collapse; background-color: #1e40af; background: linear-gradient(135deg, #1e40af 0%, #3b82f6 100%);"">")
+        sb.AppendLine("              <tr>")
+        sb.AppendLine("                <td bgcolor=""#1e40af"" style=""padding: 22px 28px; background-color: #1e40af; text-align: left;"">")
+        sb.AppendLine("                  <h1 style=""margin: 0 0 6px 0; font-size: 20px; font-weight: 800; letter-spacing: -0.5px; color: #ffffff !important;"">Informe Diario de Seguimiento Comercial</h1>")
+        sb.AppendLine(String.Format("                  <p style=""margin: 0; font-size: 13px; color: #dbeafe !important;"">Vendedor: <strong>{0}</strong> ({1}) &bull; Emitido el {2:dd/MM/yyyy HH:mm:ss} &bull; Horario 08:15 AM</p>",
+                                                    System.Net.WebUtility.HtmlEncode(resumen.VendedorNombre), resumen.VendedorClave, DateTime.Now))
+        sb.AppendLine("                </td>")
+        sb.AppendLine("              </tr>")
+        sb.AppendLine("            </table>")
+        sb.AppendLine("")
+        sb.AppendLine("            <!-- 2. Banner de Indicadores Clave (KPI) -->")
+        sb.AppendLine("            <table role=""presentation"" border=""0"" cellpadding=""0"" cellspacing=""0"" width=""100%"" bgcolor=""#f8fafc"" class=""kpi-banner"" style=""width: 100%; border-collapse: collapse; background-color: #f8fafc; border-bottom: 2px solid #e2e8f0; text-align: center;"">")
+        sb.AppendLine("              <tr>")
+        sb.AppendLine(String.Format("                <td class=""kpi-cell"" bgcolor=""#f8fafc"" style=""padding: 12px 10px; border-right: 1px solid #e2e8f0; text-align: center;""><div class=""kpi-label"" style=""font-size: 10px; text-transform: uppercase; font-weight: 700; letter-spacing: 0.5px; color: #64748b; margin-bottom: 4px;"">Cotiz. Cliente (Pendientes OC)</div><div class=""kpi-value kpi-val-tot"" style=""font-size: 18px; font-weight: 800; color: #1e293b;"">{0}</div></td>", totalCliente))
+        sb.AppendLine(String.Format("                <td class=""kpi-cell"" bgcolor=""#f8fafc"" style=""padding: 12px 10px; border-right: 1px solid #e2e8f0; text-align: center;""><div class=""kpi-label"" style=""font-size: 10px; text-transform: uppercase; font-weight: 700; letter-spacing: 0.5px; color: #64748b; margin-bottom: 4px;"">Cotiz. Internas (Pendientes Cliente)</div><div class=""kpi-value kpi-val-tot"" style=""font-size: 18px; font-weight: 800; color: #1e293b;"">{0}</div></td>", totalInternas))
+        sb.AppendLine(String.Format("                <td class=""kpi-cell"" bgcolor=""#f8fafc"" style=""padding: 12px 10px; border-right: 1px solid #e2e8f0; text-align: center;""><div class=""kpi-label"" style=""font-size: 10px; text-transform: uppercase; font-weight: 700; letter-spacing: 0.5px; color: #64748b; margin-bottom: 4px;"">Críticos (Rojos)</div><div class=""kpi-value kpi-val-red"" style=""font-size: 18px; font-weight: 800; color: #b91c1c;"">{0}</div></td>", rojosCount))
+        sb.AppendLine(String.Format("                <td class=""kpi-cell"" bgcolor=""#f8fafc"" style=""padding: 12px 10px; border-right: 1px solid #e2e8f0; text-align: center;""><div class=""kpi-label"" style=""font-size: 10px; text-transform: uppercase; font-weight: 700; letter-spacing: 0.5px; color: #64748b; margin-bottom: 4px;"">Advertencia (Amarillos)</div><div class=""kpi-value kpi-val-yel"" style=""font-size: 18px; font-weight: 800; color: #b45309;"">{0}</div></td>", amarillosCount))
+        sb.AppendLine(String.Format("                <td class=""kpi-cell"" bgcolor=""#f8fafc"" style=""padding: 12px 10px; border-right: 1px solid #e2e8f0; text-align: center;""><div class=""kpi-label"" style=""font-size: 10px; text-transform: uppercase; font-weight: 700; letter-spacing: 0.5px; color: #64748b; margin-bottom: 4px;"">En Tiempo (Verdes)</div><div class=""kpi-value kpi-val-grn"" style=""font-size: 18px; font-weight: 800; color: #15803d;"">{0}</div></td>", verdesCount))
+        sb.AppendLine(String.Format("                <td class=""kpi-cell"" bgcolor=""#f8fafc"" style=""padding: 12px 10px; border-right: none; text-align: center;""><div class=""kpi-label"" style=""font-size: 10px; text-transform: uppercase; font-weight: 700; letter-spacing: 0.5px; color: #64748b; margin-bottom: 4px;"">Monto en Cartera</div><div class=""kpi-value kpi-val-mto"" style=""font-size: 13px; font-weight: 800; color: #0284c7;"">${0:N2} USD<br/><span style=""font-size: 11px; color: #475569; font-weight: 600;"">${1:N2} MXN</span></div></td>", totalUSD, totalMXN))
+        sb.AppendLine("              </tr>")
+        sb.AppendLine("            </table>")
+        sb.AppendLine("")
+        sb.AppendLine("            <div class=""container"" style=""padding: 20px 24px; background-color: #ffffff;"">")
+        sb.AppendLine("")
+        sb.AppendLine("              <!-- ========================================================================= -->")
+        sb.AppendLine("              <!-- 1. COTIZACIONES DE CLIENTES PENDIENTES DE ORDEN DE COMPRA                   -->")
+        sb.AppendLine("              <!-- ========================================================================= -->")
+        sb.AppendLine(String.Format("              <div class=""sec-heading"" style=""font-size: 15px; font-weight: 700; color: #1e3a8a; margin: 12px 0 6px 0; padding-bottom: 6px; border-bottom: 2px solid #e2e8f0;"">&#128203; 1. Cotizaciones de Clientes Pendientes de Orden de Compra ({0})</div>", totalCliente))
+        sb.AppendLine("              <p class=""sec-subtext"" style=""font-size: 12px; color: #64748b; margin: 0 0 14px 0;"">Cotizaciones formales entregadas al cliente en espera de confirmación y recepción de la Orden de Compra formal para proceder con el suministro.</p>")
+        sb.AppendLine("")
+
+        If totalCliente = 0 Then
+            sb.AppendLine("              <div style=""font-size: 12px; color: #166534; background-color: #dcfce7; border: 1px solid #86efac; padding: 12px; border-radius: 6px; margin-bottom: 18px;"">&#10004; No tiene cotizaciones de clientes pendientes de orden de compra en este momento.</div>")
+        Else
+            For Each itm In resumen.CotizacionesCliente
+                sb.Append(GenerarTarjetaSeguimientoHtml(itm))
+            Next
+        End If
+
+        sb.AppendLine("")
+        sb.AppendLine("              <!-- ========================================================================= -->")
+        sb.AppendLine("              <!-- 2. COTIZACIONES INTERNAS PENDIENTES DE GENERAR COTIZACIÓN A CLIENTE         -->")
+        sb.AppendLine("              <!-- ========================================================================= -->")
+        sb.AppendLine(String.Format("              <div class=""sec-heading"" style=""font-size: 15px; font-weight: 700; color: #1e3a8a; margin: 24px 0 6px 0; padding-bottom: 6px; border-bottom: 2px solid #e2e8f0;"">&#9201; 2. Cotizaciones Internas Pendientes de Generar Cotización a Cliente ({0})</div>", totalInternas))
+        sb.AppendLine("              <p class=""sec-subtext"" style=""font-size: 12px; color: #64748b; margin: 0 0 14px 0;"">Cotizaciones internas elaboradas por compras con costos disponibles. Demandan generar y enviar formalmente la cotización de venta al cliente a la brevedad.</p>")
+        sb.AppendLine("")
+
+        If totalInternas = 0 Then
+            sb.AppendLine("              <div style=""font-size: 12px; color: #166534; background-color: #dcfce7; border: 1px solid #86efac; padding: 12px; border-radius: 6px; margin-bottom: 18px;"">&#10004; No tiene cotizaciones internas pendientes de cotizar a cliente en este momento.</div>")
+        Else
+            For Each itm In resumen.CotizacionesInternas
+                sb.Append(GenerarTarjetaSeguimientoHtml(itm))
+            Next
+        End If
+
+        sb.AppendLine("            </div>")
+        sb.AppendLine("")
+        sb.AppendLine("            <!-- Footer institucional -->")
+        sb.AppendLine("            <div class=""footer"" style=""background-color: #f8fafc; border-top: 1px solid #e2e8f0; padding: 16px 24px; font-size: 11px; color: #64748b; text-align: center;"">")
+        sb.AppendLine("              HistoMedic Robot LFM IA &bull; Rutina automática matutina de seguimiento comercial a ventas (08:15 AM Lunes a Viernes).<br/>")
+        sb.AppendLine("              Por favor no responda directamente a este correo automático; para cualquier actualización registre el seguimiento en el sistema.")
+        sb.AppendLine("            </div>")
+        sb.AppendLine("")
+        sb.AppendLine("          </td>")
+        sb.AppendLine("        </tr>")
+        sb.AppendLine("      </table>")
+        sb.AppendLine("    </td>")
+        sb.AppendLine("  </tr>")
+        sb.AppendLine("</table>")
+        sb.AppendLine("</body>")
+        sb.AppendLine("</html>")
+
+        Return sb.ToString()
+    End Function
 
 #End Region
 
