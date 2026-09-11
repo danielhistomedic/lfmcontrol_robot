@@ -3423,7 +3423,7 @@ intenta_otravz:
             End If
 
             ' 1. Obtener configuración de cat_consultorio
-            Dim sqlConfig As String = String.Format("SELECT {0}, {1}, {2} FROM cat_consultorio LIMIT 1",
+            Dim sqlConfig As String = String.Format("SELECT {0}, {1}, {2}, correos_solo_directivos FROM cat_consultorio LIMIT 1",
                                                     campoFrecuencia, campoDestinatarios, campoFechaUltima)
             Dim dtConfig As DataTable = tb_Recordset_MySQL_local(sqlConfig)
             If dtConfig Is Nothing OrElse dtConfig.Rows.Count = 0 Then
@@ -3432,6 +3432,12 @@ intenta_otravz:
             End If
 
             Dim rowConf As DataRow = dtConfig.Rows(0)
+
+            ' Obtener correos de directivos para envío en copia (CC)
+            Dim correosDirectivos As String = ""
+            If dtConfig.Columns.Contains("correos_solo_directivos") AndAlso Not IsDBNull(rowConf("correos_solo_directivos")) Then
+                correosDirectivos = rowConf("correos_solo_directivos").ToString().Trim()
+            End If
 
             ' Validar que la frecuencia sea mayor a 0
             Dim frecuenciaDias As Integer = 0
@@ -3550,8 +3556,8 @@ intenta_otravz:
             Catch exFile As Exception
             End Try
 
-            ' 5. Enviar correo a los destinatarios configurados
-            Dim enviadoExitoso As Boolean = EnviarCorreoNotificacionHTML(destinatarios, asunto, htmlCuerpo)
+            ' 5. Enviar correo a los destinatarios configurados con copia (CC) a directivos
+            Dim enviadoExitoso As Boolean = EnviarCorreoNotificacionHTML(destinatarios, asunto, htmlCuerpo, correosDirectivos)
 
             If enviadoExitoso Then
                 ' 6. Actualizar fecha_ultima_notifica en cat_consultorio para evitar duplicados
@@ -3561,7 +3567,7 @@ intenta_otravz:
                     cmmUpd.ExecuteNonQuery()
                 End Using
 
-                AgregarLog(200, String.Format("[{0}] Notificación enviada con éxito a: {1} ({2} partidas notificadas).", tipoNotificacion, destinatarios, dtPartidas.Rows.Count))
+                AgregarLog(200, String.Format("[{0}] Notificación enviada con éxito a: {1}{2} ({3} partidas notificadas).", tipoNotificacion, destinatarios, If(Not String.IsNullOrWhiteSpace(correosDirectivos), " [CC: " & correosDirectivos & "]", ""), dtPartidas.Rows.Count))
             Else
                 AgregarLog(500, String.Format("[{0}] Error al enviar correo a: {1}. Se reintentará en el próximo ciclo.", tipoNotificacion, destinatarios))
             End If
