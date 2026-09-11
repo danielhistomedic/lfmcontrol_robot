@@ -4177,6 +4177,7 @@ intenta_otravz:
         Public Property MotivoPrioridad As String
         Public Property Semaforo As String ' VERDE, AMARILLO, ROJO
         Public Property TotalCotizacionesCliente As Integer
+        Public Property TotalCotizacionesClienteEnviadas As Integer
         Public Property TotalPedidosCliente As Integer
         Public Property TotalSolicitudesProveedor As Integer
         Public Property TotalSolicitudesProveedorEnviadas As Integer
@@ -4206,6 +4207,19 @@ intenta_otravz:
         Public ReadOnly Property EsCanceladoODeclinado As Boolean
             Get
                 Return EsDeclinado OrElse EsCancelado
+            End Get
+        End Property
+
+        Public ReadOnly Property EsColocado As Boolean
+            Get
+                Return EstatusId >= 6 AndAlso Not EsCanceladoODeclinado
+            End Get
+        End Property
+
+        Public ReadOnly Property EsCotizado As Boolean
+            Get
+                If EsCanceladoODeclinado Then Return False
+                Return (EstatusId = 5 OrElse (TotalCotizacionesClienteEnviadas > 0 AndAlso EstatusId < 6))
             End Get
         End Property
     End Class
@@ -4394,6 +4408,7 @@ intenta_otravz:
             "  (SELECT MIN(ppd.fecha_estimada_entrega) FROM tb_pedidos_proveedor pp JOIN tb_pedidos_proveedor_detalle ppd ON pp.id = ppd.pedido_proveedor_id WHERE pp.venta_id = v.id AND ppd.fecha_estimada_entrega IS NOT NULL) AS fch_compromiso_proveedor, " & _
             "  (SELECT MAX(cc.fecha_vigencia) FROM tb_ventas_cotizacion_cliente cc WHERE cc.venta_id = v.id AND cc.activo = 1) AS fch_vigencia_cot, " & _
             "  (SELECT COUNT(*) FROM tb_ventas_cotizacion_cliente cc WHERE cc.venta_id = v.id AND cc.activo = 1) AS total_cotizaciones_cliente, " & _
+            "  (SELECT COUNT(*) FROM tb_ventas_cotizacion_cliente cc WHERE cc.venta_id = v.id AND cc.enviado = 1 AND cc.activo = 1) AS total_cotizaciones_cliente_enviadas, " & _
             "  (SELECT COUNT(*) FROM tb_pedidos_cliente pc WHERE pc.venta_id = v.id) AS total_pedidos_cliente, " & _
             "  (SELECT COUNT(*) FROM tb_compras_cotizaciones com WHERE com.venta_id = v.id) AS total_solicitudes_proveedor, " & _
             "  (SELECT COUNT(*) FROM tb_compras_cotizaciones com WHERE com.venta_id = v.id AND com.enviado = 1) AS total_solicitudes_proveedor_enviadas, " & _
@@ -4450,6 +4465,7 @@ intenta_otravz:
 
             ' Contadores
             item.TotalCotizacionesCliente = If(Not IsDBNull(r("total_cotizaciones_cliente")), Convert.ToInt32(r("total_cotizaciones_cliente")), 0)
+            item.TotalCotizacionesClienteEnviadas = If(Not IsDBNull(r("total_cotizaciones_cliente_enviadas")), Convert.ToInt32(r("total_cotizaciones_cliente_enviadas")), 0)
             item.TotalPedidosCliente = If(Not IsDBNull(r("total_pedidos_cliente")), Convert.ToInt32(r("total_pedidos_cliente")), 0)
             item.TotalSolicitudesProveedor = If(Not IsDBNull(r("total_solicitudes_proveedor")), Convert.ToInt32(r("total_solicitudes_proveedor")), 0)
             item.TotalSolicitudesProveedorEnviadas = If(Not IsDBNull(r("total_solicitudes_proveedor_enviadas")), Convert.ToInt32(r("total_solicitudes_proveedor_enviadas")), 0)
@@ -5053,7 +5069,7 @@ intenta_otravz:
         sb.AppendLine("        <td bgcolor=""#ffffff"" style=""width: 49%; padding-left: 1%; vertical-align: top; background-color: #ffffff;"">")
         sb.AppendLine("          <table role=""presentation"" border=""0"" cellpadding=""0"" cellspacing=""0"" width=""100%"" bgcolor=""#ffffff"" class=""data-table"" style=""width: 100%; border-collapse: collapse; font-size: 11px; margin-bottom: 0; background-color: #ffffff;"">")
         sb.AppendLine("            <thead>")
-        sb.AppendLine("              <tr bgcolor=""#f1f5f9""><th bgcolor=""#f1f5f9"" style=""background-color: #f1f5f9; color: #334155; font-weight: 700; padding: 7px 8px; border-bottom: 2px solid #cbd5e1; font-size: 11px; text-align: left;"">Vendedor</th><th bgcolor=""#f1f5f9"" style=""background-color: #f1f5f9; color: #334155; font-weight: 700; padding: 7px 8px; border-bottom: 2px solid #cbd5e1; font-size: 11px; text-align: center;"">Proy.</th><th bgcolor=""#f1f5f9"" style=""background-color: #f1f5f9; color: #334155; font-weight: 700; padding: 7px 8px; border-bottom: 2px solid #cbd5e1; font-size: 11px; text-align: center;"">Declinados</th><th bgcolor=""#f1f5f9"" style=""background-color: #f1f5f9; color: #334155; font-weight: 700; padding: 7px 8px; border-bottom: 2px solid #cbd5e1; font-size: 11px; text-align: right;"">Monto USD</th><th bgcolor=""#f1f5f9"" style=""background-color: #f1f5f9; color: #334155; font-weight: 700; padding: 7px 8px; border-bottom: 2px solid #cbd5e1; font-size: 11px; text-align: right;"">Monto MXN</th></tr>")
+        sb.AppendLine("              <tr bgcolor=""#f1f5f9""><th bgcolor=""#f1f5f9"" style=""background-color: #f1f5f9; color: #334155; font-weight: 700; padding: 7px 8px; border-bottom: 2px solid #cbd5e1; font-size: 11px; text-align: left;"">Vendedor</th><th bgcolor=""#f1f5f9"" style=""background-color: #f1f5f9; color: #334155; font-weight: 700; padding: 7px 8px; border-bottom: 2px solid #cbd5e1; font-size: 11px; text-align: center;"">Proy.</th><th bgcolor=""#f1f5f9"" style=""background-color: #f1f5f9; color: #334155; font-weight: 700; padding: 7px 8px; border-bottom: 2px solid #cbd5e1; font-size: 11px; text-align: center;"">Declinados</th><th bgcolor=""#f1f5f9"" style=""background-color: #f1f5f9; color: #334155; font-weight: 700; padding: 7px 8px; border-bottom: 2px solid #cbd5e1; font-size: 11px; text-align: center;"">Cotizados</th><th bgcolor=""#f1f5f9"" style=""background-color: #f1f5f9; color: #334155; font-weight: 700; padding: 7px 8px; border-bottom: 2px solid #cbd5e1; font-size: 11px; text-align: center;"">Colocados</th><th bgcolor=""#f1f5f9"" style=""background-color: #f1f5f9; color: #334155; font-weight: 700; padding: 7px 8px; border-bottom: 2px solid #cbd5e1; font-size: 11px; text-align: right;"">Monto USD</th><th bgcolor=""#f1f5f9"" style=""background-color: #f1f5f9; color: #334155; font-weight: 700; padding: 7px 8px; border-bottom: 2px solid #cbd5e1; font-size: 11px; text-align: right;"">Monto MXN</th></tr>")
         sb.AppendLine("            </thead>")
         sb.AppendLine("            <tbody>")
         Dim vends = proyectos.GroupBy(Function(p) p.VendedorNombre).OrderByDescending(Function(g) g.Count)
@@ -5063,9 +5079,13 @@ intenta_otravz:
             Dim mtoMXN As Double = g.Where(Function(p) Not p.MonedaSiglas.Equals("USD", StringComparison.OrdinalIgnoreCase)).Sum(Function(p) p.TotalMonto)
             Dim declinadosVend As Integer = g.Where(Function(p) p.EsDeclinado).Count()
             Dim declinadosVendStr As String = If(declinadosVend > 0, String.Format("<span style=""color: #dc2626; font-weight: 700;"">{0}</span>", declinadosVend), "<span style=""color: #94a3b8;"">0</span>")
+            Dim cotizadosVend As Integer = g.Where(Function(p) p.EsCotizado).Count()
+            Dim cotizadosVendStr As String = If(cotizadosVend > 0, String.Format("<span style=""color: #2563eb; font-weight: 700;"">{0}</span>", cotizadosVend), "<span style=""color: #94a3b8;"">0</span>")
+            Dim colocadosVend As Integer = g.Where(Function(p) p.EsColocado).Count()
+            Dim colocadosVendStr As String = If(colocadosVend > 0, String.Format("<span style=""color: #16a34a; font-weight: 700;"">{0}</span>", colocadosVend), "<span style=""color: #94a3b8;"">0</span>")
             Dim rowBg As String = If(idxVend Mod 2 = 0, "#ffffff", "#f8fafc")
-            sb.AppendLine(String.Format("              <tr bgcolor=""{0}"" style=""background-color: {0};""><td bgcolor=""{0}"" style=""padding: 6px 8px; border-bottom: 1px solid #e2e8f0; color: #1e293b; background-color: {0};""><strong>{1}</strong></td><td bgcolor=""{0}"" style=""text-align: center; padding: 6px 8px; border-bottom: 1px solid #e2e8f0; color: #1e293b; background-color: {0};"">{2}</td><td bgcolor=""{0}"" style=""text-align: center; padding: 6px 8px; border-bottom: 1px solid #e2e8f0; background-color: {0};"">{3}</td><td bgcolor=""{0}"" style=""text-align: right; padding: 6px 8px; border-bottom: 1px solid #e2e8f0; color: #1e293b; background-color: {0};"">${4:N2}</td><td bgcolor=""{0}"" style=""text-align: right; padding: 6px 8px; border-bottom: 1px solid #e2e8f0; color: #1e293b; background-color: {0};"">${5:N2}</td></tr>",
-                                        rowBg, System.Net.WebUtility.HtmlEncode(g.Key), g.Count, declinadosVendStr, mtoUSD, mtoMXN))
+            sb.AppendLine(String.Format("              <tr bgcolor=""{0}"" style=""background-color: {0};""><td bgcolor=""{0}"" style=""padding: 6px 8px; border-bottom: 1px solid #e2e8f0; color: #1e293b; background-color: {0};""><strong>{1}</strong></td><td bgcolor=""{0}"" style=""text-align: center; padding: 6px 8px; border-bottom: 1px solid #e2e8f0; color: #1e293b; background-color: {0};"">{2}</td><td bgcolor=""{0}"" style=""text-align: center; padding: 6px 8px; border-bottom: 1px solid #e2e8f0; background-color: {0};"">{3}</td><td bgcolor=""{0}"" style=""text-align: center; padding: 6px 8px; border-bottom: 1px solid #e2e8f0; color: #1e293b; background-color: {0};"">{4}</td><td bgcolor=""{0}"" style=""text-align: center; padding: 6px 8px; border-bottom: 1px solid #e2e8f0; color: #1e293b; background-color: {0};"">{5}</td><td bgcolor=""{0}"" style=""text-align: right; padding: 6px 8px; border-bottom: 1px solid #e2e8f0; color: #1e293b; background-color: {0};"">${6:N2}</td><td bgcolor=""{0}"" style=""text-align: right; padding: 6px 8px; border-bottom: 1px solid #e2e8f0; color: #1e293b; background-color: {0};"">${7:N2}</td></tr>",
+                                        rowBg, System.Net.WebUtility.HtmlEncode(g.Key), g.Count, declinadosVendStr, cotizadosVendStr, colocadosVendStr, mtoUSD, mtoMXN))
             idxVend += 1
         Next
         sb.AppendLine("            </tbody>")
