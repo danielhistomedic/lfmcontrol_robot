@@ -4641,25 +4641,33 @@ intenta_otravz:
         End If
 
         ' Regla Especial: Estatus 5 - COTIZACION CLIENTE ELABORADA (PEDIDO COTIZADO)
-        ' El semáforo es exclusivamente VERDE o ROJO según la fecha compromiso:
-        ' - VERDE si la fecha actual es antes de la fecha compromiso.
-        ' - ROJO si la fecha actual es igual o mayor a la fecha compromiso.
+        ' El semáforo se evalúa según los días restantes para recibir respuesta del cliente:
+        ' - ROJO si faltan 10 días o menos (o ya venció).
+        ' - AMARILLO si faltan 20 días o menos (y más de 10 días).
+        ' - VERDE si faltan más de 20 días.
         If item.EstatusId = 5 Then
             If item.FechaCompromiso.HasValue Then
-                If DateTime.Now.Date < item.FechaCompromiso.Value.Date Then
-                    item.Semaforo = "VERDE"
-                    item.MotivoPrioridad = String.Format("Cotización a cliente en tiempo (Compromiso/Vigencia: {0:dd/MM/yy})", item.FechaCompromiso.Value)
-                    item.IndicadorRiesgo = "NORMAL - En Plazo"
-                Else
+                Dim diasRestantes As Integer = CInt(Math.Floor((item.FechaCompromiso.Value.Date - DateTime.Now.Date).TotalDays))
+                If diasRestantes <= 10 Then
                     item.Semaforo = "ROJO"
-                    If DateTime.Now.Date = item.FechaCompromiso.Value.Date Then
-                        item.MotivoPrioridad = String.Format("Fecha compromiso/vigencia ({0}) vence HOY", item.TipoFechaCompromiso)
-                        item.IndicadorRiesgo = "CRÍTICO - Compromiso Vence Hoy"
-                    Else
-                        Dim diasVencidos As Integer = CInt(Math.Floor((DateTime.Now.Date - item.FechaCompromiso.Value.Date).TotalDays))
-                        item.MotivoPrioridad = String.Format("Fecha compromiso/vigencia ({0}) vencida hace {1} día(s)", item.TipoFechaCompromiso, diasVencidos)
+                    If diasRestantes < 0 Then
+                        item.MotivoPrioridad = String.Format("Vigencia/Respuesta de cotización vencida hace {0} día(s) ({1:dd/MM/yy})", Math.Abs(diasRestantes), item.FechaCompromiso.Value)
                         item.IndicadorRiesgo = "CRÍTICO - Compromiso Vencido"
+                    ElseIf diasRestantes = 0 Then
+                        item.MotivoPrioridad = String.Format("Vigencia/Respuesta de cotización vence HOY ({0:dd/MM/yy})", item.FechaCompromiso.Value)
+                        item.IndicadorRiesgo = "CRÍTICO - Vence Hoy"
+                    Else
+                        item.MotivoPrioridad = String.Format("Faltan {0} día(s) para recibir respuesta del cliente (Vigencia: {1:dd/MM/yy})", diasRestantes, item.FechaCompromiso.Value)
+                        item.IndicadorRiesgo = "CRÍTICO - Plazo Próximo a Vencer"
                     End If
+                ElseIf diasRestantes <= 20 Then
+                    item.Semaforo = "AMARILLO"
+                    item.MotivoPrioridad = String.Format("Faltan {0} días para recibir respuesta del cliente (Vigencia: {1:dd/MM/yy})", diasRestantes, item.FechaCompromiso.Value)
+                    item.IndicadorRiesgo = "ADVERTENCIA - Seguimiento Requerido"
+                Else
+                    item.Semaforo = "VERDE"
+                    item.MotivoPrioridad = String.Format("Cotización a cliente en tiempo (Faltan {0} días, Vigencia: {1:dd/MM/yy})", diasRestantes, item.FechaCompromiso.Value)
+                    item.IndicadorRiesgo = "NORMAL - En Plazo"
                 End If
             Else
                 item.Semaforo = "VERDE"
@@ -5312,12 +5320,57 @@ intenta_otravz:
             Dim borderCol As String = If(p.Semaforo = "ROJO", "#dc2626", If(p.Semaforo = "AMARILLO", "#d97706", "#16a34a"))
             Dim bgCol As String = If(p.Semaforo = "ROJO", "#fff1f2", If(p.Semaforo = "AMARILLO", "#fffbeb", "#f0fdf4"))
 
+            ' Badge de días restantes para recibir respuesta del cliente (Semaforizado: <=20 días amarillo, <=10 días rojo)
+            Dim badgeDiasStr As String = ""
+            If p.DiasParaCompromiso.HasValue Then
+                Dim dRest As Integer = p.DiasParaCompromiso.Value
+                Dim bgDias As String
+                Dim colDias As String
+                Dim borderDias As String
+                Dim txtDias As String
+
+                If dRest < 0 Then
+                    bgDias = "#fee2e2"
+                    colDias = "#b91c1c"
+                    borderDias = "#fca5a5"
+                    txtDias = String.Format("&#9888; Vencido hace {0} día(s)", Math.Abs(dRest))
+                ElseIf dRest = 0 Then
+                    bgDias = "#fee2e2"
+                    colDias = "#b91c1c"
+                    borderDias = "#fca5a5"
+                    txtDias = "&#9888; Vence HOY para respuesta"
+                ElseIf dRest = 1 Then
+                    bgDias = "#fee2e2"
+                    colDias = "#b91c1c"
+                    borderDias = "#fca5a5"
+                    txtDias = "&#9203; Falta 1 día para respuesta"
+                ElseIf dRest <= 10 Then
+                    bgDias = "#fee2e2"
+                    colDias = "#b91c1c"
+                    borderDias = "#fca5a5"
+                    txtDias = String.Format("&#9203; Faltan {0} días para respuesta", dRest)
+                ElseIf dRest <= 20 Then
+                    bgDias = "#fef9c3"
+                    colDias = "#a16207"
+                    borderDias = "#fde047"
+                    txtDias = String.Format("&#9203; Faltan {0} días para respuesta", dRest)
+                Else
+                    bgDias = "#dcfce7"
+                    colDias = "#15803d"
+                    borderDias = "#86efac"
+                    txtDias = String.Format("&#9203; Faltan {0} días para respuesta", dRest)
+                End If
+
+                badgeDiasStr = String.Format(" &nbsp;<span style=""display: inline-block; background-color: {0}; color: {1} !important; border: 1px solid {2}; padding: 2px 8px; border-radius: 10px; font-weight: 700; font-size: 11px; vertical-align: middle;"">{3}</span>",
+                                             bgDias, colDias, borderDias, txtDias)
+            End If
+
             sb.AppendLine(String.Format("    <div class=""card-prio"" style=""border-left: 5px solid {0}; background-color: {1}; padding: 12px 16px; margin-bottom: 12px; border-radius: 4px; border-top: 1px solid #e2e8f0; border-right: 1px solid #e2e8f0; border-bottom: 1px solid #e2e8f0;"">", borderCol, bgCol))
             sb.AppendLine(String.Format("      <table role=""presentation"" border=""0"" cellpadding=""0"" cellspacing=""0"" width=""100%"" bgcolor=""{0}"" style=""width: 100%; border-collapse: collapse; background-color: {0};"">", bgCol))
             sb.AppendLine("        <tr>")
-            sb.AppendLine(String.Format("          <td style=""font-size: 13px; font-weight: 700; color: #0f172a;""><span class=""{0}"" style=""{1}"">&#9679; {2}</span> &nbsp; Folio: <span style=""font-family: Consolas, monospace;"">{3}</span> &bull; {4}</td>",
-                                        badgeClass, badgeStyle, p.Semaforo, p.ProyectoId, System.Net.WebUtility.HtmlEncode(p.ClienteNombre)))
-            sb.AppendLine(String.Format("          <td style=""text-align: right; font-weight: 800; font-size: 13px; color: #0f172a;"">{0:C2} {1}</td>", p.TotalMonto, p.MonedaSiglas))
+            sb.AppendLine(String.Format("          <td style=""font-size: 13px; font-weight: 700; color: #0f172a;""><span class=""{0}"" style=""{1}"">&#9679; {2}</span> &nbsp; Folio: <span style=""font-family: Consolas, monospace;"">{3}</span> &bull; {4}{5}</td>",
+                                        badgeClass, badgeStyle, p.Semaforo, p.ProyectoId, System.Net.WebUtility.HtmlEncode(p.ClienteNombre), badgeDiasStr))
+            sb.AppendLine(String.Format("          <td style=""text-align: right; font-weight: 800; font-size: 13px; color: #0f172a; white-space: nowrap;"">{0:C2} {1}</td>", p.TotalMonto, p.MonedaSiglas))
             sb.AppendLine("        </tr>")
             sb.AppendLine("      </table>")
             sb.AppendLine(String.Format("      <div style=""font-size: 12px; color: #334155; margin: 5px 0;""><strong>Descripción:</strong> {0}</div>", System.Net.WebUtility.HtmlEncode(p.Titulo)))
@@ -5476,8 +5529,10 @@ intenta_otravz:
                 Dim fchCompStr As String = "-"
                 If p.FechaCompromiso.HasValue Then
                     fchCompStr = String.Format("<span title=""{0}"">{1:dd/MM/yy}</span>", p.TipoFechaCompromiso, p.FechaCompromiso.Value)
-                    If p.DiasParaCompromiso.HasValue AndAlso p.DiasParaCompromiso.Value < 0 Then
-                        fchCompStr &= String.Format("<br/><span style=""color: #b91c1c; font-size: 10px; font-weight: bold;"">({0}d)</span>", p.DiasParaCompromiso.Value)
+                    If p.DiasParaCompromiso.HasValue Then
+                        Dim colorDiasDet As String = If(p.DiasParaCompromiso.Value <= 10, "#b91c1c", If(p.DiasParaCompromiso.Value <= 20, "#d97706", "#15803d"))
+                        Dim pesoDiasDet As String = If(p.DiasParaCompromiso.Value <= 20, "bold", "normal")
+                        fchCompStr &= String.Format("<br/><span style=""color: {0}; font-size: 10px; font-weight: {1};"">({2}d)</span>", colorDiasDet, pesoDiasDet, p.DiasParaCompromiso.Value)
                     End If
                 End If
 
