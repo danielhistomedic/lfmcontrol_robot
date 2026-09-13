@@ -3370,15 +3370,23 @@ intenta_otravz:
 
     ''' <summary>
     ''' Rutina automática para notificar al personal de compras las partidas pendientes de cotizar de FLOWserve.
+    ''' Ocurre de lunes a viernes (omitiendo sábados y domingos).
     ''' </summary>
-    Public Sub NotificarCotizacionesPendientesFlowserve()
+    Public Sub NotificarCotizacionesPendientesFlowserve(Optional ByVal forzarEnvio As Boolean = False)
         Try
+            If Not forzarEnvio Then
+                If DateTime.Now.DayOfWeek = DayOfWeek.Saturday OrElse DateTime.Now.DayOfWeek = DayOfWeek.Sunday Then
+                    Return
+                End If
+            End If
+
             ProcesarNotificacionCotizacionesPendientes(
                 "FLOWserve",
                 "frecuencia_notifica_flowserve",
                 "correos_segcot_compras_flowserve",
                 "fecha_ultima_notifica_flowserve",
-                New Integer() {2, 3, 4, 6}
+                New Integer() {2, 3, 4, 6},
+                forzarEnvio
             )
         Catch ex As Exception
             AgregarLog(500, "Error en NotificarCotizacionesPendientesFlowserve: " & ex.Message)
@@ -3388,15 +3396,23 @@ intenta_otravz:
 
     ''' <summary>
     ''' Rutina automática para notificar al personal de compras las partidas pendientes de cotizar de DIVERSOS.
+    ''' Ocurre de lunes a viernes (omitiendo sábados y domingos).
     ''' </summary>
-    Public Sub NotificarCotizacionesPendientesDiversos()
+    Public Sub NotificarCotizacionesPendientesDiversos(Optional ByVal forzarEnvio As Boolean = False)
         Try
+            If Not forzarEnvio Then
+                If DateTime.Now.DayOfWeek = DayOfWeek.Saturday OrElse DateTime.Now.DayOfWeek = DayOfWeek.Sunday Then
+                    Return
+                End If
+            End If
+
             ProcesarNotificacionCotizacionesPendientes(
                 "DIVERSOS",
                 "frecuencia_notifica_diversos",
                 "correos_segcot_compras_diversos",
                 "fecha_ultima_notifica_diversos",
-                New Integer() {5, 6}
+                New Integer() {5, 6},
+                forzarEnvio
             )
         Catch ex As Exception
             AgregarLog(500, "Error en NotificarCotizacionesPendientesDiversos: " & ex.Message)
@@ -3412,14 +3428,22 @@ intenta_otravz:
                                                           ByVal campoFrecuencia As String,
                                                           ByVal campoDestinatarios As String,
                                                           ByVal campoFechaUltima As String,
-                                                          ByVal clasificacionesIds As Integer())
+                                                          ByVal clasificacionesIds As Integer(),
+                                                          Optional ByVal forzarEnvio As Boolean = False)
         If _procesandoNotificaciones Then Return
 
-        ' 0. Validar que la hora actual sea a partir de las 8:30 AM
-        Dim horaProgramada As New TimeSpan(8, 30, 0)
-        If DateTime.Now.TimeOfDay < horaProgramada Then
-            ' Aún no son las 8:30 AM del día actual, esperar a la hora programada
-            Return
+        ' 0. Omitir sábados y domingos (salvo si es forzado manualmente para pruebas)
+        If Not forzarEnvio Then
+            If DateTime.Now.DayOfWeek = DayOfWeek.Saturday OrElse DateTime.Now.DayOfWeek = DayOfWeek.Sunday Then
+                Return
+            End If
+
+            ' Validar que la hora actual sea a partir de las 8:30 AM
+            Dim horaProgramada As New TimeSpan(8, 30, 0)
+            If DateTime.Now.TimeOfDay < horaProgramada Then
+                ' Aún no son las 8:30 AM del día actual, esperar a la hora programada
+                Return
+            End If
         End If
 
         _procesandoNotificaciones = True
@@ -3482,7 +3506,7 @@ intenta_otravz:
                 End If
             End If
 
-            If fechaUltimaNotif.HasValue Then
+            If Not forzarEnvio AndAlso fechaUltimaNotif.HasValue Then
                 ' A. Si ya fue enviada hoy, no volver a enviar en el mismo día
                 If fechaUltimaNotif.Value.Date = DateTime.Now.Date Then
                     Return
@@ -4282,8 +4306,13 @@ intenta_otravz:
     Public Sub NotificarInformeEjecutivoProyectos(Optional ByVal forzarEnvio As Boolean = False)
         If _procesandoInformeProyectos Then Return
 
-        ' 1. Validar horario de envío diario (a partir de las 08:00 AM) salvo si es forzado manualmente
+        ' 1. Omitir sábados y domingos (salvo si es forzado manualmente para pruebas)
         If Not forzarEnvio Then
+            If DateTime.Now.DayOfWeek = DayOfWeek.Saturday OrElse DateTime.Now.DayOfWeek = DayOfWeek.Sunday Then
+                Return
+            End If
+
+            ' 2. Validar horario de envío diario (a partir de las 08:00 AM)
             Dim horaProgramada As New TimeSpan(8, 0, 0)
             If DateTime.Now.TimeOfDay < horaProgramada Then
                 Return
