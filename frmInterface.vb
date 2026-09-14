@@ -70,6 +70,13 @@ Public Class frmInterface
     Private _sincronizandoPasesSalida As Boolean = False
     Private ReadOnly _lockPasesSalida As New Object()
 
+    ' =========================================================================
+    ' Control de Sincronización de Archivos Adjuntos Pases de Salida
+    ' =========================================================================
+    Private _procesandoAdjuntosPasesSalida As Boolean = False
+    Private ReadOnly _lockAdjuntosPasesSalida As New Object()
+
+
 #Region "Propiedades"
 
     Protected str_FTP_USUARIO As String
@@ -531,6 +538,12 @@ Public Class frmInterface
                     Me.ExportarAdjuntosAlmacen()
                 Catch ex As Exception
                     LogEventos.Escribir("ExportarAdjuntosAlmacen. " & ex.Message)
+                End Try
+
+                Try
+                    Me.ExportarAdjuntosPasesSalida()
+                Catch ex As Exception
+                    LogEventos.Escribir("ExportarAdjuntosPasesSalida. " & ex.Message)
                 End Try
 
                 Try
@@ -3485,6 +3498,196 @@ intenta_otravz:
             LogEventos.Escribir("Error general en ExportarAdjuntos: " & ex.Message)
         End Try
 
+
+    End Sub
+
+    ''' <summary>
+    ''' Exporta al servidor central los archivos adjuntos registrados en tb_pases_salida_adjuntos con sinc = 1.
+    ''' Localiza cada archivo en /TB_RECIBOS (disco local o FTP local) y lo transfiere mediante FTPHosting
+    ''' a /sistema.lfmcontrol.com.mx/Assets/files/pases_salida/.
+    ''' Solo tras confirmar la carga exitosa, actualiza sinc = 0.
+    ''' </summary>
+    Public Sub ExportarAdjuntosPasesSalida()
+
+        If Not _servidorCentralConectado Then
+            Exit Sub
+        End If
+
+        SyncLock _lockAdjuntosPasesSalida
+            If _procesandoAdjuntosPasesSalida Then
+                Exit Sub
+            End If
+            _procesandoAdjuntosPasesSalida = True
+        End SyncLock
+
+        Try
+            ' 1. Consultar registros de tb_pases_salida_adjuntos con sinc = 1
+            Dim query As String = "SELECT id, pase_salida_id, archivo, tipo_archivo, duracion_segundos, fchregistro, ccveusuario, sinc " & _
+                                  "FROM tb_pases_salida_adjuntos WHERE sinc = 1;"
+            Dim dt As DataTable = tb_Recordset_MySQL_local(query)
+
+            If dt Is Nothing OrElse dt.Rows.Count = 0 Then
+                Exit Sub
+            End If
+
+            ' Preparar credenciales para cliente FTP local en caso de requerir descarga
+            Dim rawIp As String = Me.FTP_IP
+            If String.IsNullOrWhiteSpace(rawIp) Then rawIp = IpServidor
+            If String.IsNullOrWhiteSpace(rawIp) Then rawIp = "127.0.0.1"
+
+            rawIp = rawIp.Replace("ftp://", "").Replace("ftps://", "").Replace("http://", "").Trim("/"c, " "c)
+            If String.IsNullOrWhiteSpace(rawIp) Then rawIp = "127.0.0.1"
+
+            Dim localFtpHost As String = "ftp://" & rawIp
+            Dim localFtpUser As String = Me.FTP_USUARIO
+            Dim localFtpPass As String = Me.FTP_PASSWORD
+
+            Dim ftpLocalClient As New FtpClient(localFtpHost, localFtpUser, localFtpPass)
+
+            ' Directorio temporal local seguro (staging) antes de enviar a FTPHosting
+            Dim tempFolder As String = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "HistoMedic_Temp")
+            If Not System.IO.Directory.Exists(tempFolder) Then
+                System.IO.Directory.CreateDirectory(tempFolder)
+            End If
+
+            ' Directorios físicos locales candidatos donde reside /TB_RECIBOS
+            Dim rutasCandidatas() As String = {
+                "C:\HistoMedic\FTP_LFM\TB_RECIBOS",
+                "C:\HistoMedic\FTP\TB_RECIBOS",
+                System.IO.Path.Combine(Application.StartupPath, "TB_RECIBOS")
+            }
+
+            Const CARPETA_DESTINO_REMOTA As String = "/sistema.lfmcontrol.com.mx/Assets/files/pases_salida/"
+            Dim idsProcesados As New HashSet(Of Integer)()
+            Dim ftpCentral As New FTPHosting()
+
+            For Each row As DataRow In dt.Rows
+
+                Dim idRegistro As Integer = 0
+                If IsDBNull(row("id")) OrElse Not Integer.TryParse(row("id").ToString(), idRegistro) OrElse idRegistro <= 0 Then
+                    Continue For
+                End If
+
+                ' Evitar reprocesar duplicados en el mismo ciclo
+                If idsProcesados.Contains(idRegistro) Then
+                    Continue For
+                End If
+                idsProcesados.Add(idRegistro)
+
+                Dim nombreArchivo As String = ""
+                If Not IsDBNull(row("archivo")) Then
+                    nombreArchivo = row("archivo").ToString().Trim()
+                End If
+
+                If String.IsNullOrWhiteSpace(nombreArchivo) Then
+                    LogEventos.Escribir(String.Format("[Pases Salida Adjuntos] ID {0}: Nombre de archivo vacío o nulo. Se mantiene sinc = 1.", idRegistro))
+                    Continue For
+                End If
+
+                ' Limpiar caracteres o rutas relativas si vinieran en el nombre
+                Dim nombreArchivoLimpio As String = System.IO.Path.GetFileName(nombreArchivo)
+                Dim rutaTemporalLocal As String = System.IO.Path.Combine(tempFolder, nombreArchivoLimpio)
+
+                Try
+                    ' 2. Localizar el archivo físicamente en TB_RECIBOS
+                    Dim localizado As Boolean = False
+
+                    ' A) Buscar primero en las rutas físicas directas del disco
+                    For Each dirCand As String In rutasCandidatas
+                        If System.IO.Directory.Exists(dirCand) Then
+                            Dim rutaFisicaDirecta As String = System.IO.Path.Combine(dirCand, nombreArchivoLimpio)
+                            If System.IO.File.Exists(rutaFisicaDirecta) Then
+                                Try
+                                    ' Copiar a ruta temporal para que FTPHosting (que elimina tras subir) no borre el original en TB_RECIBOS
+                                    System.IO.File.Copy(rutaFisicaDirecta, rutaTemporalLocal, True)
+                                    localizado = True
+                                    Exit For
+                                Catch exCopy As Exception
+                                    LogEventos.Escribir(String.Format("[Pases Salida Adjuntos] ID {0}: Error al copiar archivo local desde '{1}': {2}", idRegistro, rutaFisicaDirecta, exCopy.Message))
+                                End Try
+                            End If
+                        End If
+                    Next
+
+                    ' B) Si no se encontró en disco local directo, descargar vía FTP local /TB_RECIBOS/
+                    If Not localizado Then
+                        Try
+                            Dim rutaRemotaLocal As String = localFtpHost & "/TB_RECIBOS/" & nombreArchivoLimpio
+                            Dim descargado As Boolean = ftpLocalClient.DescargarArchivo(rutaRemotaLocal, rutaTemporalLocal)
+                            If descargado AndAlso System.IO.File.Exists(rutaTemporalLocal) Then
+                                localizado = True
+                            End If
+                        Catch exDescarga As Exception
+                            LogEventos.Escribir(String.Format("[Pases Salida Adjuntos] ID {0}: Error al descargar desde FTP local /TB_RECIBOS/: {1}", idRegistro, exDescarga.Message))
+                        End Try
+                    End If
+
+                    ' 3. Verificar que el archivo exista y sea accesible
+                    If Not localizado OrElse Not System.IO.File.Exists(rutaTemporalLocal) Then
+                        LogEventos.Escribir(String.Format("[Pases Salida Adjuntos] ID {0}: Archivo '{1}' no se pudo localizar ni descargar desde TB_RECIBOS. Se mantiene sinc = 1.", idRegistro, nombreArchivoLimpio))
+                        Continue For
+                    End If
+
+                    Dim fi As New System.IO.FileInfo(rutaTemporalLocal)
+                    If fi.Length = 0 Then
+                        LogEventos.Escribir(String.Format("[Pases Salida Adjuntos] ID {0}: Archivo '{1}' se encuentra vacío (0 bytes). Se mantiene sinc = 1.", idRegistro, nombreArchivoLimpio))
+                        Continue For
+                    End If
+
+                    ' 4 & 5. Conectar mediante FTPHosting y subir al servidor central
+                    Dim subido As Boolean = False
+                    Try
+                        subido = ftpCentral.SubirArchivo(rutaTemporalLocal, nombreArchivoLimpio, CARPETA_DESTINO_REMOTA)
+                    Catch exFtp As Exception
+                        LogEventos.Escribir(String.Format("[Pases Salida Adjuntos] ID {0}: Excepción en FTPHosting al subir '{1}': {2}", idRegistro, nombreArchivoLimpio, exFtp.Message))
+                        subido = False
+                    End Try
+
+                    ' 6 & 7. Solo después de confirmar el éxito de la transferencia, actualizar sinc = 0
+                    If subido Then
+                        Dim actualizado As Boolean = False
+                        Try
+                            If cx_MySQL_local.State = ConnectionState.Closed Then
+                                cx_MySQL_local.Open()
+                            End If
+
+                            Using cmdUpdate As New MySqlConnector.MySqlCommand("UPDATE tb_pases_salida_adjuntos SET sinc = 0 WHERE id = @id;", cx_MySQL_local)
+                                cmdUpdate.Parameters.Add("@id", MySqlConnector.MySqlDbType.Int32).Value = idRegistro
+                                Dim rowsAffected As Integer = cmdUpdate.ExecuteNonQuery()
+                                actualizado = (rowsAffected > 0)
+                            End Using
+                        Catch exUpdate As Exception
+                            LogEventos.Escribir(String.Format("[Pases Salida Adjuntos] ID {0}: Archivo '{1}' subido pero error al actualizar sinc = 0 local: {2}", idRegistro, nombreArchivoLimpio, exUpdate.Message))
+                        End Try
+
+                        If actualizado Then
+                            LogEventos.Escribir(String.Format("[Pases Salida Adjuntos] ID {0}: Archivo '{1}' ({2:N0} bytes) exportado exitosamente al servidor central y actualizado sinc = 0.", idRegistro, nombreArchivoLimpio, fi.Length))
+                        End If
+                    Else
+                        LogEventos.Escribir(String.Format("[Pases Salida Adjuntos] ID {0}: Falló la carga FTP de '{1}' al servidor central. Se mantiene sinc = 1.", idRegistro, nombreArchivoLimpio))
+                    End If
+
+                Catch exArchivo As Exception
+                    LogEventos.Escribir(String.Format("[Pases Salida Adjuntos] ID {0}: Error no controlado procesando archivo '{1}': {2}. Se mantiene sinc = 1.", idRegistro, nombreArchivo, exArchivo.Message))
+                Finally
+                    ' Limpieza de seguridad del archivo temporal local
+                    Try
+                        If System.IO.File.Exists(rutaTemporalLocal) Then
+                            System.IO.File.Delete(rutaTemporalLocal)
+                        End If
+                    Catch exClean As Exception
+                    End Try
+                End Try
+
+            Next
+
+        Catch exGeneral As Exception
+            LogEventos.Escribir(String.Format("[Pases Salida Adjuntos] Error general en ExportarAdjuntosPasesSalida: {0}", exGeneral.Message))
+        Finally
+            SyncLock _lockAdjuntosPasesSalida
+                _procesandoAdjuntosPasesSalida = False
+            End SyncLock
+        End Try
 
     End Sub
 
