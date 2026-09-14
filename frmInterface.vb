@@ -64,6 +64,12 @@ Public Class frmInterface
     Private _fechaUltimoEnvioSeguimientoComprasFlowserve As Nullable(Of DateTime) = Nothing
     Private _fechaUltimoEnvioSeguimientoComprasDiversos As Nullable(Of DateTime) = Nothing
 
+    ' =========================================================================
+    ' Control de Sincronización de Pases de Salida (Servidor Central -> Local)
+    ' =========================================================================
+    Private _sincronizandoPasesSalida As Boolean = False
+    Private ReadOnly _lockPasesSalida As New Object()
+
 #Region "Propiedades"
 
     Protected str_FTP_USUARIO As String
@@ -593,8 +599,22 @@ Public Class frmInterface
 
         While Not token.IsCancellationRequested
             If _servidorCentralConectado Then
-                Me.ExportarDataToHostingSP()
-                Me.ExportarDataToHostingSP_Almacen()
+                Try
+                    Me.ExportarDataToHostingSP()
+                Catch exdatauno As Exception
+                    LogEventos.Escribir(String.Format("[ExportarDataToHostingSP] Error no controlado en ciclo de descarga: {0}", exdatauno.Message))
+                End Try
+                Try
+                    Me.ExportarDataToHostingSP_Almacen()
+                Catch exdatados As Exception
+                    LogEventos.Escribir(String.Format("[ExportarDataToHostingSP_Almacen] Error no controlado en ciclo de descarga: {0}", exdatados.Message))
+                End Try
+
+                Try
+                    Me.DescargarPasesSalidaCentral()
+                Catch exPases As Exception
+                    LogEventos.Escribir(String.Format("[Pases Salida] Error no controlado en ciclo de descarga: {0}", exPases.Message))
+                End Try
             End If
             token.WaitHandle.WaitOne(1000)
         End While
@@ -6965,6 +6985,204 @@ intenta_otravz:
 
         Return sb.ToString()
     End Function
+
+#End Region
+
+#Region "Sincronización Pases de Salida Servidor Central -> Local"
+
+    ''' <summary>
+    ''' Sincroniza y descarga desde el servidor central hacia la base de datos local
+    ''' los registros de tb_pases_salida cuyo campo sinc = 1.
+    ''' Actualiza exclusivamente los 6 campos:
+    ''' sinc, firma_recibe, fch_usuario_recibe, nombre_recibio_salida, ccveusuario_recibe, enviado.
+    ''' </summary>
+    Public Sub DescargarPasesSalidaCentral()
+
+        If Not _servidorCentralConectado Then
+            Exit Sub
+        End If
+
+        SyncLock _lockPasesSalida
+            If _sincronizandoPasesSalida Then
+                Exit Sub
+            End If
+            _sincronizandoPasesSalida = True
+        End SyncLock
+
+        Try
+            ' 1. Asegurar conexiones abiertas
+            If cx_MySQL_CentralAsync.State = ConnectionState.Closed Then
+                cx_MySQL_CentralAsync.Open()
+            End If
+            If cx_MySQL_localAsync.State = ConnectionState.Closed Then
+                cx_MySQL_localAsync.Open()
+            End If
+
+            ' 2. Consultar registros en servidor central con sinc = 1
+            Dim sqlCentral As String = "SELECT id, sinc, firma_recibe, fch_usuario_recibe, nombre_recibio_salida, ccveusuario_recibe, enviado " & _
+                                       "FROM tb_pases_salida WHERE sinc = 1;"
+
+            Dim dtCentral As New DataTable()
+            Using cmdCentral As New MySqlConnector.MySqlCommand(sqlCentral, cx_MySQL_CentralAsync)
+                cmdCentral.CommandTimeout = 60
+                Using daCentral As New MySqlConnector.MySqlDataAdapter(cmdCentral)
+                    daCentral.Fill(dtCentral)
+                End Using
+            End Using
+
+            If dtCentral Is Nothing OrElse dtCentral.Rows.Count = 0 Then
+                Exit Sub
+            End If
+
+            ' Control de duplicados dentro del lote
+            Dim idsProcesados As New HashSet(Of Integer)()
+
+            Dim sqlCheckLocal As String = "SELECT COUNT(1) FROM tb_pases_salida WHERE id = @id;"
+            Dim sqlUpdateLocal As String = "UPDATE tb_pases_salida SET " & _
+                                           "sinc = @sinc, " & _
+                                           "firma_recibe = @firma_recibe, " & _
+                                           "fch_usuario_recibe = @fch_usuario_recibe, " & _
+                                           "nombre_recibio_salida = @nombre_recibio_salida, " & _
+                                           "ccveusuario_recibe = @ccveusuario_recibe, " & _
+                                           "enviado = @enviado " & _
+                                           "WHERE id = @id;"
+
+            Dim sqlAckCentral As String = "UPDATE tb_pases_salida SET sinc = 0 WHERE id = @id;"
+
+            For Each rowCentral As DataRow In dtCentral.Rows
+
+                Dim idCentral As Integer = 0
+                If IsDBNull(rowCentral("id")) OrElse Not Integer.TryParse(rowCentral("id").ToString(), idCentral) OrElse idCentral <= 0 Then
+                    Continue For
+                End If
+
+                ' Evitar procesar duplicados
+                If idsProcesados.Contains(idCentral) Then
+                    Continue For
+                End If
+                idsProcesados.Add(idCentral)
+
+                ' Procesar de forma segura cada registro individualmente
+                Try
+                    ' Verificar si existe localmente
+                    Dim existeLocal As Boolean = False
+                    Using cmdCheck As New MySqlConnector.MySqlCommand(sqlCheckLocal, cx_MySQL_localAsync)
+                        cmdCheck.Parameters.Add("@id", MySqlConnector.MySqlDbType.Int32).Value = idCentral
+                        Dim countObj As Object = cmdCheck.ExecuteScalar()
+                        If countObj IsNot Nothing AndAlso Not IsDBNull(countObj) AndAlso Convert.ToInt32(countObj) > 0 Then
+                            existeLocal = True
+                        End If
+                    End Using
+
+                    ' Si no existe localmente, no crear registros ni alterar otras tablas
+                    If Not existeLocal Then
+                        LogEventos.Escribir(String.Format("[Pases Salida] El registro ID {0} no existe en la base de datos local. Se omite actualización.", idCentral))
+                        Continue For
+                    End If
+
+                    ' Actualizar exclusivamente los 6 campos en local usando parámetros SQL y transacción
+                    Dim actualizadoLocal As Boolean = False
+                    Using trLocal As MySqlConnector.MySqlTransaction = cx_MySQL_localAsync.BeginTransaction()
+                        Try
+                            Using cmdUpdate As New MySqlConnector.MySqlCommand(sqlUpdateLocal, cx_MySQL_localAsync, trLocal)
+                                cmdUpdate.Parameters.Add("@id", MySqlConnector.MySqlDbType.Int32).Value = idCentral
+
+                                ' 1. sinc
+                                Dim valSinc As Integer = 1
+                                If Not IsDBNull(rowCentral("sinc")) AndAlso Integer.TryParse(rowCentral("sinc").ToString(), valSinc) Then
+                                    cmdUpdate.Parameters.Add("@sinc", MySqlConnector.MySqlDbType.Int32).Value = valSinc
+                                Else
+                                    cmdUpdate.Parameters.Add("@sinc", MySqlConnector.MySqlDbType.Int32).Value = 1
+                                End If
+
+                                ' 2. firma_recibe
+                                If IsDBNull(rowCentral("firma_recibe")) OrElse String.IsNullOrWhiteSpace(rowCentral("firma_recibe").ToString()) Then
+                                    cmdUpdate.Parameters.Add("@firma_recibe", MySqlConnector.MySqlDbType.LongText).Value = DBNull.Value
+                                Else
+                                    cmdUpdate.Parameters.Add("@firma_recibe", MySqlConnector.MySqlDbType.LongText).Value = rowCentral("firma_recibe").ToString().Trim()
+                                End If
+
+                                ' 3. fch_usuario_recibe
+                                If IsDBNull(rowCentral("fch_usuario_recibe")) OrElse String.IsNullOrWhiteSpace(rowCentral("fch_usuario_recibe").ToString()) Then
+                                    cmdUpdate.Parameters.Add("@fch_usuario_recibe", MySqlConnector.MySqlDbType.DateTime).Value = DBNull.Value
+                                Else
+                                    Dim fchRecibe As DateTime
+                                    If DateTime.TryParse(rowCentral("fch_usuario_recibe").ToString(), fchRecibe) Then
+                                        cmdUpdate.Parameters.Add("@fch_usuario_recibe", MySqlConnector.MySqlDbType.DateTime).Value = fchRecibe
+                                    Else
+                                        cmdUpdate.Parameters.Add("@fch_usuario_recibe", MySqlConnector.MySqlDbType.DateTime).Value = DBNull.Value
+                                    End If
+                                End If
+
+                                ' 4. nombre_recibio_salida
+                                If IsDBNull(rowCentral("nombre_recibio_salida")) OrElse String.IsNullOrWhiteSpace(rowCentral("nombre_recibio_salida").ToString()) Then
+                                    cmdUpdate.Parameters.Add("@nombre_recibio_salida", MySqlConnector.MySqlDbType.VarChar, 255).Value = DBNull.Value
+                                Else
+                                    cmdUpdate.Parameters.Add("@nombre_recibio_salida", MySqlConnector.MySqlDbType.VarChar, 255).Value = rowCentral("nombre_recibio_salida").ToString().Trim()
+                                End If
+
+                                ' 5. ccveusuario_recibe
+                                If IsDBNull(rowCentral("ccveusuario_recibe")) OrElse String.IsNullOrWhiteSpace(rowCentral("ccveusuario_recibe").ToString()) Then
+                                    cmdUpdate.Parameters.Add("@ccveusuario_recibe", MySqlConnector.MySqlDbType.VarChar, 45).Value = DBNull.Value
+                                Else
+                                    cmdUpdate.Parameters.Add("@ccveusuario_recibe", MySqlConnector.MySqlDbType.VarChar, 45).Value = rowCentral("ccveusuario_recibe").ToString().Trim()
+                                End If
+
+                                ' 6. enviado
+                                Dim valEnviado As Integer = 0
+                                If Not IsDBNull(rowCentral("enviado")) AndAlso Integer.TryParse(rowCentral("enviado").ToString(), valEnviado) Then
+                                    cmdUpdate.Parameters.Add("@enviado", MySqlConnector.MySqlDbType.Int32).Value = valEnviado
+                                Else
+                                    cmdUpdate.Parameters.Add("@enviado", MySqlConnector.MySqlDbType.Int32).Value = 0
+                                End If
+
+                                cmdUpdate.ExecuteNonQuery()
+                            End Using
+
+                            trLocal.Commit()
+                            actualizadoLocal = True
+                        Catch exUpdateLocal As Exception
+                            Try
+                                trLocal.Rollback()
+                            Catch exRb As Exception
+                            End Try
+                            LogEventos.Escribir(String.Format("[Pases Salida] Error al actualizar localmente pase ID {0}: {1}", idCentral, exUpdateLocal.Message))
+                        End Try
+                    End Using
+
+                    ' Si se actualizó localmente de forma exitosa, confirmar en el servidor central actualizando sinc = 0
+                    If actualizadoLocal Then
+                        Try
+                            Using cmdAck As New MySqlConnector.MySqlCommand(sqlAckCentral, cx_MySQL_CentralAsync)
+                                cmdAck.Parameters.Add("@id", MySqlConnector.MySqlDbType.Int32).Value = idCentral
+                                cmdAck.ExecuteNonQuery()
+                            End Using
+
+                            LogEventos.Escribir(String.Format("[Pases Salida] Pase de salida ID {0} sincronizado exitosamente desde el servidor central.", idCentral))
+                        Catch exAck As Exception
+                            LogEventos.Escribir(String.Format("[Pases Salida] Registro ID {0} actualizado localmente pero error al confirmar en central: {1}", idCentral, exAck.Message))
+                        End Try
+                    End If
+
+                Catch exRegistro As Exception
+                    ' Continuar con el siguiente registro en caso de fallo individual
+                    LogEventos.Escribir(String.Format("[Pases Salida] Error en proceso individual de pase ID {0}: {1}", idCentral, exRegistro.Message))
+                End Try
+
+            Next
+
+        Catch exMySql As MySqlConnector.MySqlException
+            LogEventos.Escribir(String.Format("[Pases Salida] Error MySQL en sincronización: {0}", exMySql.Message))
+            NotificarDesconexionCentral("Error de conexión al sincronizar pases de salida: " & exMySql.Message)
+        Catch exGeneral As Exception
+            LogEventos.Escribir(String.Format("[Pases Salida] Error general en DescargarPasesSalidaCentral: {0}", exGeneral.Message))
+        Finally
+            SyncLock _lockPasesSalida
+                _sincronizandoPasesSalida = False
+            End SyncLock
+        End Try
+
+    End Sub
 
 #End Region
 
