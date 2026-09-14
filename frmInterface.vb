@@ -3208,7 +3208,38 @@ intenta_otravz:
 
 #Region "Adjuntos"
 
-    Private Sub ExportarAdjuntos()
+    ''' <summary>
+    ''' Actualiza sinc = 0 para el registro especificado mediante consulta SQL parametrizada por su llave primaria.
+    ''' </summary>
+    Private Function ActualizarSincronizadoLocal(nombreTabla As String, nombreCampoPk As String, valorId As Object) As Boolean
+        Try
+            If cx_MySQL_local.State = ConnectionState.Closed Then
+                cx_MySQL_local.Open()
+            End If
+
+            Dim sql As String = String.Format("UPDATE {0} SET sinc = 0 WHERE {1} = @id;", nombreTabla, nombreCampoPk)
+            Using cmd As New MySqlConnector.MySqlCommand(sql, cx_MySQL_local)
+                cmd.Parameters.Add("@id", MySqlConnector.MySqlDbType.Int32).Value = Convert.ToInt32(valorId)
+                Dim rowsAffected As Integer = cmd.ExecuteNonQuery()
+                Return rowsAffected > 0
+            End Using
+        Catch ex As Exception
+            LogEventos.Escribir(String.Format("ActualizarSincronizadoLocal - Tabla: {0} - {1}: {2} - Error: {3}", nombreTabla, nombreCampoPk, valorId, ex.Message))
+            Return False
+        End Try
+    End Function
+
+    ''' <summary>
+    ''' Registra en Eventos.log un error o rechazo en la sincronización de un archivo adjunto.
+    ''' </summary>
+    Private Sub RegistrarErrorAdjunto(funcion As String, idRegistro As Object, nombreArchivo As String, tipoError As String, detalleError As String)
+        Dim strId As String = If(idRegistro IsNot Nothing AndAlso Not IsDBNull(idRegistro), idRegistro.ToString(), "N/A")
+        Dim strArchivo As String = If(Not String.IsNullOrWhiteSpace(nombreArchivo), nombreArchivo, "Desconocido")
+        Dim mensaje As String = String.Format("{0} - ID: {1} - Archivo: {2} - Error [{3}]: {4}", funcion, strId, strArchivo, tipoError, detalleError)
+        LogEventos.Escribir(mensaje)
+    End Sub
+
+    Public Sub ExportarAdjuntos()
 
         Try
             Dim tablas() As String = {
@@ -3235,6 +3266,11 @@ intenta_otravz:
 
             Dim ftpLocalClient As New FtpClient(localFtpHost, localFtpUser, localFtpPass)
 
+            Dim tempFolder As String = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "HistoMedic_Temp")
+            If Not System.IO.Directory.Exists(tempFolder) Then
+                System.IO.Directory.CreateDirectory(tempFolder)
+            End If
+
             For Each tabla As String In tablas
                 Try
                     Dim query As String = "SELECT * FROM " & tabla & " WHERE sinc = 1"
@@ -3242,49 +3278,77 @@ intenta_otravz:
 
                     If dt IsNot Nothing AndAlso dt.Rows.Count > 0 Then
                         For Each row As DataRow In dt.Rows
+                            Dim idRegistro As Object = If(dt.Columns.Contains("id") AndAlso Not IsDBNull(row("id")), row("id"), "N/A")
+                            Dim nombreArchivo As String = ""
+
                             Try
-                                If Not IsDBNull(row("archivo")) AndAlso Not String.IsNullOrWhiteSpace(row("archivo").ToString()) Then
-                                    Dim nombreArchivo As String = row("archivo").ToString().Trim()
-                                    Dim rutaRemotaLocal As String = localFtpHost & "/TB_VENTAS/" & nombreArchivo
-
-                                    Dim tempFolder As String = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "HistoMedic_Temp")
-                                    If Not System.IO.Directory.Exists(tempFolder) Then
-                                        System.IO.Directory.CreateDirectory(tempFolder)
-                                    End If
-                                    Dim rutaTemporalLocal As String = System.IO.Path.Combine(tempFolder, nombreArchivo)
-
-                                    ' 1. Descargar de FTP Local usando FtpClient.vb
-                                    Dim descargado As Boolean = ftpLocalClient.DescargarArchivo(rutaRemotaLocal, rutaTemporalLocal)
-
-                                    If descargado AndAlso System.IO.File.Exists(rutaTemporalLocal) Then
-                                        ' 2. Subir al hosting de Hostgator
-                                        Dim subido As Boolean = SubirArchivoHosting(rutaTemporalLocal, nombreArchivo, "/sistema.lfmcontrol.com.mx/Assets/files/ventas/")
-
-                                        If subido Then
-                                            ' 3. Actualizar sinc = 0 en la tabla local de origen
-                                            Dim campoCond As String = "id"
-                                            Dim valorCond As String = ""
-                                            If dt.Columns.Contains("id") AndAlso Not IsDBNull(row("id")) Then
-                                                valorCond = row("id").ToString()
-                                            Else
-                                                campoCond = "archivo"
-                                                valorCond = nombreArchivo
-                                            End If
-
-                                            Update_local(tabla, "sinc = 0", campoCond, valorCond)
-                                        End If
-
-                                        ' Limpiar archivo temporal local
-                                        Try
-                                            If System.IO.File.Exists(rutaTemporalLocal) Then
-                                                System.IO.File.Delete(rutaTemporalLocal)
-                                            End If
-                                        Catch exClean As Exception
-                                        End Try
-                                    End If
+                                If IsDBNull(row("archivo")) OrElse String.IsNullOrWhiteSpace(row("archivo").ToString()) Then
+                                    RegistrarErrorAdjunto("ExportarAdjuntos", idRegistro, "", "Validacion", "Campo 'archivo' vacío o nulo en tabla " & tabla & ". Se mantiene sinc = 1.")
+                                    Continue For
                                 End If
+
+                                nombreArchivo = row("archivo").ToString().Trim()
+                                Dim nombreArchivoLimpio As String = System.IO.Path.GetFileName(nombreArchivo)
+                                Dim rutaTemporalLocal As String = System.IO.Path.Combine(tempFolder, nombreArchivoLimpio)
+
+                                ' 1. Descarga exclusiva desde FTP local /TB_VENTAS/
+                                Dim localizado As Boolean = False
+                                Dim rutaRemotaLocal As String = localFtpHost & "/TB_VENTAS/" & nombreArchivoLimpio
+                                Try
+                                    Dim descargado As Boolean = ftpLocalClient.DescargarArchivo(rutaRemotaLocal, rutaTemporalLocal)
+                                    If descargado AndAlso System.IO.File.Exists(rutaTemporalLocal) Then
+                                        localizado = True
+                                    End If
+                                Catch exDescarga As Exception
+                                    RegistrarErrorAdjunto("ExportarAdjuntos", idRegistro, nombreArchivoLimpio, "DescargaFTP", "Excepción al descargar de FTP local (" & rutaRemotaLocal & "): " & exDescarga.Message)
+                                End Try
+
+                                ' 2. Validar que el archivo exista físicamente y sea legible
+                                If Not localizado OrElse Not System.IO.File.Exists(rutaTemporalLocal) Then
+                                    RegistrarErrorAdjunto("ExportarAdjuntos", idRegistro, nombreArchivoLimpio, "NoEncontrado", "El archivo no existe o no se pudo localizar en TB_VENTAS. Se mantiene sinc = 1.")
+                                    Continue For
+                                End If
+
+                                Dim fi As New System.IO.FileInfo(rutaTemporalLocal)
+                                If fi.Length = 0 Then
+                                    RegistrarErrorAdjunto("ExportarAdjuntos", idRegistro, nombreArchivoLimpio, "ArchivoVacio", "El archivo tiene tamaño 0 bytes. Se mantiene sinc = 1.")
+                                    Continue For
+                                End If
+
+                                ' 3. Subir al hosting mediante SubirArchivoHosting (FTPHosting)
+                                Dim subido As Boolean = False
+                                Try
+                                    subido = SubirArchivoHosting(rutaTemporalLocal, nombreArchivoLimpio, "/sistema.lfmcontrol.com.mx/Assets/files/ventas/")
+                                Catch exSubida As Exception
+                                    RegistrarErrorAdjunto("ExportarAdjuntos", idRegistro, nombreArchivoLimpio, "FTPHosting", "Excepción en SubirArchivoHosting: " & exSubida.Message)
+                                    subido = False
+                                End Try
+
+                                ' 4. Únicamente cuando SubirArchivo = True se actualiza sinc = 0
+                                If subido Then
+                                    Dim actualizado As Boolean = ActualizarSincronizadoLocal(tabla, "id", idRegistro)
+                                    If actualizado Then
+                                        LogEventos.Escribir(String.Format("ExportarAdjuntos - Tabla: {0} - ID: {1} - Archivo: {2} - Cargado exitosamente y actualizado sinc = 0.", tabla, idRegistro, nombreArchivoLimpio))
+                                    Else
+                                        RegistrarErrorAdjunto("ExportarAdjuntos", idRegistro, nombreArchivoLimpio, "BaseDatos", "Archivo cargado a hosting pero falló el UPDATE sinc = 0 en tabla " & tabla)
+                                    End If
+                                Else
+                                    RegistrarErrorAdjunto("ExportarAdjuntos", idRegistro, nombreArchivoLimpio, "FTPHosting", "FTPHosting.SubirArchivo devolvió False. Se mantiene sinc = 1.")
+                                End If
+
                             Catch exRow As Exception
-                                LogEventos.Escribir("Error al procesar registro en " & tabla & ": " & exRow.Message)
+                                RegistrarErrorAdjunto("ExportarAdjuntos", idRegistro, nombreArchivo, "Excepcion", "Error no controlado procesando registro: " & exRow.Message)
+                            Finally
+                                ' Limpieza de archivo temporal si quedó remanente
+                                Try
+                                    If Not String.IsNullOrWhiteSpace(nombreArchivo) Then
+                                        Dim rutaTempClean As String = System.IO.Path.Combine(tempFolder, System.IO.Path.GetFileName(nombreArchivo))
+                                        If System.IO.File.Exists(rutaTempClean) Then
+                                            System.IO.File.Delete(rutaTempClean)
+                                        End If
+                                    End If
+                                Catch exClean As Exception
+                                End Try
                             End Try
                         Next
                     End If
@@ -3311,10 +3375,9 @@ intenta_otravz:
 
     End Function
 
-    Private Sub ExportarAdjuntosFotosMaterial()
+    Public Sub ExportarAdjuntosFotosMaterial()
 
         Try
-
             Dim rawIp As String = Me.FTP_IP
             If String.IsNullOrWhiteSpace(rawIp) Then rawIp = IpServidor
             If String.IsNullOrWhiteSpace(rawIp) Then rawIp = "127.0.0.1"
@@ -3323,100 +3386,134 @@ intenta_otravz:
             If String.IsNullOrWhiteSpace(rawIp) Then rawIp = "127.0.0.1"
 
             Dim localFtpHost As String = "ftp://" & rawIp
-
             Dim localFtpUser As String = Me.FTP_USUARIO
             Dim localFtpPass As String = Me.FTP_PASSWORD
 
             Dim ftpLocalClient As New FtpClient(localFtpHost, localFtpUser, localFtpPass)
 
-            Try
-                Dim query As String = "SELECT * FROM tb_materiales_ftp WHERE sinc = 1"
-                Dim dt As DataTable = tb_Recordset_MySQL_local(query)
+            Dim query As String = "SELECT * FROM tb_materiales_ftp WHERE sinc = 1"
+            Dim dt As DataTable = tb_Recordset_MySQL_local(query)
 
-                If dt Is Nothing OrElse dt.Rows.Count = 0 Then Exit Try
+            If dt Is Nothing OrElse dt.Rows.Count = 0 Then Exit Sub
 
-                'Crear carpeta temporal una sola vez
-                Dim tempFolder As String = Path.Combine(Path.GetTempPath(), "HistoMedic_Temp")
+            Dim tempFolder As String = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "HistoMedic_Temp")
+            If Not System.IO.Directory.Exists(tempFolder) Then
+                System.IO.Directory.CreateDirectory(tempFolder)
+            End If
 
-                If Not Directory.Exists(tempFolder) Then
-                    Directory.CreateDirectory(tempFolder)
+            For Each row As DataRow In dt.Rows
+                Dim idRegistro As Object = If(dt.Columns.Contains("Id") AndAlso Not IsDBNull(row("Id")), row("Id"), "N/A")
+                If idRegistro.ToString() = "N/A" AndAlso dt.Columns.Contains("id") AndAlso Not IsDBNull(row("id")) Then
+                    idRegistro = row("id")
                 End If
 
-                For Each row As DataRow In dt.Rows
+                Try
+                    Dim totalImagenesDefinidas As Integer = 0
+                    Dim imagenesSubidasOk As Integer = 0
+                    Dim huboFalloEnAlgunaImagen As Boolean = False
 
-                    Try
+                    For i As Integer = 1 To 5
+                        Dim nombreArchivo As String = ""
+                        If Not IsDBNull(row("img" & i)) Then
+                            nombreArchivo = row("img" & i).ToString().Trim()
+                        End If
 
-                        Dim imagenesProcesadas As Integer = 0
+                        ' Si la columna no tiene imagen, continuar con la siguiente
+                        If String.IsNullOrWhiteSpace(nombreArchivo) Then
+                            Continue For
+                        End If
 
-                        For i As Integer = 1 To 5
+                        totalImagenesDefinidas += 1
+                        Dim nombreArchivoLimpio As String = System.IO.Path.GetFileName(nombreArchivo)
+                        Dim rutaTemporalLocal As String = System.IO.Path.Combine(tempFolder, nombreArchivoLimpio)
 
-                            Dim nombreArchivo As String = ""
+                        Try
+                            ' 1. Descarga exclusiva desde FTP local /TB_MATERIALES/
+                            Dim localizado As Boolean = False
+                            Dim rutaRemotaLocal As String = localFtpHost & "/TB_MATERIALES/" & nombreArchivoLimpio
+                            Try
+                                Dim descargado As Boolean = ftpLocalClient.DescargarArchivo(rutaRemotaLocal, rutaTemporalLocal)
+                                If descargado AndAlso System.IO.File.Exists(rutaTemporalLocal) Then
+                                    localizado = True
+                                End If
+                            Catch exDescarga As Exception
+                                RegistrarErrorAdjunto("ExportarAdjuntosFotosMaterial", idRegistro, nombreArchivoLimpio, "DescargaFTP", "Excepción al descargar de FTP local (" & rutaRemotaLocal & "): " & exDescarga.Message)
+                            End Try
 
-                            If Not IsDBNull(row("img" & i)) Then
-                                nombreArchivo = row("img" & i).ToString().Trim()
-                            End If
-
-                            'No existe imagen
-                            If String.IsNullOrWhiteSpace(nombreArchivo) Then
-                                imagenesProcesadas += 1
+                            ' Validar existencia y legibilidad
+                            If Not localizado OrElse Not System.IO.File.Exists(rutaTemporalLocal) Then
+                                huboFalloEnAlgunaImagen = True
+                                RegistrarErrorAdjunto("ExportarAdjuntosFotosMaterial", idRegistro, nombreArchivoLimpio, "NoEncontrado", "Imagen img" & i & " no existe o no se pudo localizar en TB_MATERIALES. Se mantiene sinc = 1.")
                                 Continue For
                             End If
 
-                            Dim rutaRemota As String = localFtpHost & "/TB_MATERIALES/" & nombreArchivo
-                            Dim rutaTemporal As String = Path.Combine(tempFolder, nombreArchivo)
-
-                            'Descargar desde FTP Local
-                            If ftpLocalClient.DescargarArchivo(rutaRemota, rutaTemporal) Then
-
-                                If File.Exists(rutaTemporal) Then
-
-                                    'Subir al hosting
-                                    If SubirArchivoHosting(rutaTemporal,
-                                                           nombreArchivo,
-                                                           "/sistema.lfmcontrol.com.mx/Assets/files/productos/") Then
-
-                                        imagenesProcesadas += 1
-                                    End If
-
-                                    'Eliminar archivo temporal
-                                    Try
-                                        File.Delete(rutaTemporal)
-                                    Catch
-                                    End Try
-
-                                End If
-
+                            Dim fi As New System.IO.FileInfo(rutaTemporalLocal)
+                            If fi.Length = 0 Then
+                                huboFalloEnAlgunaImagen = True
+                                RegistrarErrorAdjunto("ExportarAdjuntosFotosMaterial", idRegistro, nombreArchivoLimpio, "ArchivoVacio", "Imagen img" & i & " tiene tamaño 0 bytes. Se mantiene sinc = 1.")
+                                Continue For
                             End If
 
-                        Next
+                            ' Subir al hosting de productos
+                            Dim subido As Boolean = False
+                            Try
+                                subido = SubirArchivoHosting(rutaTemporalLocal, nombreArchivoLimpio, "/sistema.lfmcontrol.com.mx/Assets/files/productos/")
+                            Catch exSubida As Exception
+                                RegistrarErrorAdjunto("ExportarAdjuntosFotosMaterial", idRegistro, nombreArchivoLimpio, "FTPHosting", "Excepción al subir imagen img" & i & ": " & exSubida.Message)
+                                subido = False
+                            End Try
 
-                        'Si las 5 imÃ¡genes fueron procesadas (existieran o no)
-                        If imagenesProcesadas = 5 Then
-                            Update_local("tb_materiales_ftp",
-                                         "sinc = 0",
-                                         "Id",
-                                         row("Id").ToString())
+                            If subido Then
+                                imagenesSubidasOk += 1
+                            Else
+                                huboFalloEnAlgunaImagen = True
+                                RegistrarErrorAdjunto("ExportarAdjuntosFotosMaterial", idRegistro, nombreArchivoLimpio, "FTPHosting", "FTPHosting.SubirArchivo devolvió False para imagen img" & i & ". Se mantiene sinc = 1.")
+                            End If
+
+                        Catch exImg As Exception
+                            huboFalloEnAlgunaImagen = True
+                            RegistrarErrorAdjunto("ExportarAdjuntosFotosMaterial", idRegistro, nombreArchivoLimpio, "ExcepcionImagen", "Error al procesar imagen img" & i & ": " & exImg.Message)
+                        Finally
+                            Try
+                                If System.IO.File.Exists(rutaTemporalLocal) Then
+                                    System.IO.File.Delete(rutaTemporalLocal)
+                                End If
+                            Catch exClean As Exception
+                            End Try
+                        End Try
+                    Next
+
+                    ' Regla: Si hubo fallo en alguna imagen, NO actualizar sinc = 0. Mantener sinc = 1.
+                    ' Solo actualizar sinc = 0 si todas las imágenes definidas fueron confirmadas exitosamente.
+                    If Not huboFalloEnAlgunaImagen Then
+                        If totalImagenesDefinidas > 0 AndAlso imagenesSubidasOk = totalImagenesDefinidas Then
+                            Dim actualizado As Boolean = ActualizarSincronizadoLocal("tb_materiales_ftp", "Id", idRegistro)
+                            If actualizado Then
+                                LogEventos.Escribir(String.Format("ExportarAdjuntosFotosMaterial - ID: {0} - {1} imágenes cargadas exitosamente y actualizado sinc = 0.", idRegistro, imagenesSubidasOk))
+                            Else
+                                RegistrarErrorAdjunto("ExportarAdjuntosFotosMaterial", idRegistro, "", "BaseDatos", "Imágenes cargadas a hosting pero falló el UPDATE sinc = 0 en tb_materiales_ftp")
+                            End If
+                        ElseIf totalImagenesDefinidas = 0 Then
+                            ' Sin imágenes adjuntas registradas en este registro
+                            ActualizarSincronizadoLocal("tb_materiales_ftp", "Id", idRegistro)
+                            LogEventos.Escribir(String.Format("ExportarAdjuntosFotosMaterial - ID: {0} - Sin imágenes adjuntas registradas. Actualizado sinc = 0.", idRegistro))
                         End If
+                    Else
+                        LogEventos.Escribir(String.Format("ExportarAdjuntosFotosMaterial - ID: {0} - Carga incompleta ({1}/{2} imágenes exitosas). Se mantiene sinc = 1.", idRegistro, imagenesSubidasOk, totalImagenesDefinidas))
+                    End If
 
-                    Catch exRow As Exception
-                        LogEventos.Escribir("Error al procesar ID " &
-                                            row("Id").ToString() &
-                                            ": " &
-                                            exRow.Message)
-                    End Try
+                Catch exRow As Exception
+                    RegistrarErrorAdjunto("ExportarAdjuntosFotosMaterial", idRegistro, "", "Excepcion", "Error no controlado procesando registro: " & exRow.Message)
+                End Try
+            Next
 
-                Next
-
-            Catch exTabla As Exception
-                LogEventos.Escribir("Error al consultar tb_materiales_ftp: " & exTabla.Message)
-            End Try
-        Catch ex As Exception
-            LogEventos.Escribir("Error general en ExportarAdjuntosFotosMaterial: " & ex.Message)
+        Catch exGeneral As Exception
+            LogEventos.Escribir("Error general en ExportarAdjuntosFotosMaterial: " & exGeneral.Message)
         End Try
 
     End Sub
 
-    Private Sub ExportarAdjuntosAlmacen()
+    Public Sub ExportarAdjuntosAlmacen()
 
         Try
             Dim tablas() As String = {
@@ -3431,11 +3528,15 @@ intenta_otravz:
             If String.IsNullOrWhiteSpace(rawIp) Then rawIp = "127.0.0.1"
 
             Dim localFtpHost As String = "ftp://" & rawIp
-
             Dim localFtpUser As String = Me.FTP_USUARIO
             Dim localFtpPass As String = Me.FTP_PASSWORD
 
             Dim ftpLocalClient As New FtpClient(localFtpHost, localFtpUser, localFtpPass)
+
+            Dim tempFolder As String = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "HistoMedic_Temp")
+            If Not System.IO.Directory.Exists(tempFolder) Then
+                System.IO.Directory.CreateDirectory(tempFolder)
+            End If
 
             For Each tabla As String In tablas
                 Try
@@ -3443,50 +3544,83 @@ intenta_otravz:
                     Dim dt As DataTable = tb_Recordset_MySQL_local(query)
 
                     If dt IsNot Nothing AndAlso dt.Rows.Count > 0 Then
+                        Dim campoPk As String = "icvereciboscompdigitales"
+                        If Not dt.Columns.Contains(campoPk) AndAlso dt.Columns.Contains("id") Then
+                            campoPk = "id"
+                        End If
+
                         For Each row As DataRow In dt.Rows
+                            Dim idRegistro As Object = If(dt.Columns.Contains(campoPk) AndAlso Not IsDBNull(row(campoPk)), row(campoPk), "N/A")
+                            Dim nombreArchivo As String = ""
+
                             Try
-                                If Not IsDBNull(row("documento_ftp")) AndAlso Not String.IsNullOrWhiteSpace(row("documento_ftp").ToString()) Then
-                                    Dim nombreArchivo As String = row("documento_ftp").ToString().Trim()
-                                    Dim rutaRemotaLocal As String = localFtpHost & "/TB_RECIBOS/" & nombreArchivo
-
-                                    Dim tempFolder As String = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "HistoMedic_Temp")
-                                    If Not System.IO.Directory.Exists(tempFolder) Then
-                                        System.IO.Directory.CreateDirectory(tempFolder)
-                                    End If
-                                    Dim rutaTemporalLocal As String = System.IO.Path.Combine(tempFolder, nombreArchivo)
-
-                                    ' 1. Descargar de FTP Local usando FtpClient.vb
-                                    Dim descargado As Boolean = ftpLocalClient.DescargarArchivo(rutaRemotaLocal, rutaTemporalLocal)
-
-                                    If descargado AndAlso System.IO.File.Exists(rutaTemporalLocal) Then
-                                        ' 2. Subir al hosting de Hostgator
-                                        Dim subido As Boolean = SubirArchivoHosting(rutaTemporalLocal, nombreArchivo, "/sistema.lfmcontrol.com.mx/Assets/files/ventas/")
-
-                                        If subido Then
-                                            ' 3. Actualizar sinc = 0 en la tabla local de origen
-                                            Dim campoCond As String = "icvereciboscompdigitales"
-                                            Dim valorCond As String = ""
-                                            If dt.Columns.Contains("icvereciboscompdigitales") AndAlso Not IsDBNull(row("icvereciboscompdigitales")) Then
-                                                valorCond = row("icvereciboscompdigitales").ToString()
-                                            Else
-                                                campoCond = "documento_ftp"
-                                                valorCond = nombreArchivo
-                                            End If
-
-                                            Update_local(tabla, "sinc = 0", campoCond, valorCond)
-                                        End If
-
-                                        ' Limpiar archivo temporal local
-                                        Try
-                                            If System.IO.File.Exists(rutaTemporalLocal) Then
-                                                System.IO.File.Delete(rutaTemporalLocal)
-                                            End If
-                                        Catch exClean As Exception
-                                        End Try
-                                    End If
+                                If IsDBNull(row("documento_ftp")) OrElse String.IsNullOrWhiteSpace(row("documento_ftp").ToString()) Then
+                                    RegistrarErrorAdjunto("ExportarAdjuntosAlmacen", idRegistro, "", "Validacion", "Campo 'documento_ftp' vacío o nulo en tabla " & tabla & ". Se mantiene sinc = 1.")
+                                    Continue For
                                 End If
+
+                                nombreArchivo = row("documento_ftp").ToString().Trim()
+                                Dim nombreArchivoLimpio As String = System.IO.Path.GetFileName(nombreArchivo)
+                                Dim rutaTemporalLocal As String = System.IO.Path.Combine(tempFolder, nombreArchivoLimpio)
+
+                                ' 1. Descarga exclusiva desde FTP local /TB_RECIBOS/
+                                Dim localizado As Boolean = False
+                                Dim rutaRemotaLocal As String = localFtpHost & "/TB_RECIBOS/" & nombreArchivoLimpio
+                                Try
+                                    Dim descargado As Boolean = ftpLocalClient.DescargarArchivo(rutaRemotaLocal, rutaTemporalLocal)
+                                    If descargado AndAlso System.IO.File.Exists(rutaTemporalLocal) Then
+                                        localizado = True
+                                    End If
+                                Catch exDescarga As Exception
+                                    RegistrarErrorAdjunto("ExportarAdjuntosAlmacen", idRegistro, nombreArchivoLimpio, "DescargaFTP", "Excepción al descargar de FTP local (" & rutaRemotaLocal & "): " & exDescarga.Message)
+                                End Try
+
+                                ' 2. Validar que el archivo exista físicamente y sea legible
+                                If Not localizado OrElse Not System.IO.File.Exists(rutaTemporalLocal) Then
+                                    RegistrarErrorAdjunto("ExportarAdjuntosAlmacen", idRegistro, nombreArchivoLimpio, "NoEncontrado", "El archivo no existe o no se pudo localizar en TB_RECIBOS. Se mantiene sinc = 1.")
+                                    Continue For
+                                End If
+
+                                Dim fi As New System.IO.FileInfo(rutaTemporalLocal)
+                                If fi.Length = 0 Then
+                                    RegistrarErrorAdjunto("ExportarAdjuntosAlmacen", idRegistro, nombreArchivoLimpio, "ArchivoVacio", "El archivo tiene tamaño 0 bytes. Se mantiene sinc = 1.")
+                                    Continue For
+                                End If
+
+                                ' 3. Subir al hosting mediante SubirArchivoHosting (FTPHosting)
+                                Dim subido As Boolean = False
+                                Try
+                                    subido = SubirArchivoHosting(rutaTemporalLocal, nombreArchivoLimpio, "/sistema.lfmcontrol.com.mx/Assets/files/ventas/")
+                                Catch exSubida As Exception
+                                    RegistrarErrorAdjunto("ExportarAdjuntosAlmacen", idRegistro, nombreArchivoLimpio, "FTPHosting", "Excepción en SubirArchivoHosting: " & exSubida.Message)
+                                    subido = False
+                                End Try
+
+                                ' 4. Únicamente cuando SubirArchivo = True se actualiza sinc = 0
+                                If subido Then
+                                    Dim actualizado As Boolean = ActualizarSincronizadoLocal(tabla, campoPk, idRegistro)
+                                    If actualizado Then
+                                        LogEventos.Escribir(String.Format("ExportarAdjuntosAlmacen - Tabla: {0} - ID: {1} - Archivo: {2} - Cargado exitosamente y actualizado sinc = 0.", tabla, idRegistro, nombreArchivoLimpio))
+                                    Else
+                                        RegistrarErrorAdjunto("ExportarAdjuntosAlmacen", idRegistro, nombreArchivoLimpio, "BaseDatos", "Archivo cargado a hosting pero falló el UPDATE sinc = 0 en tabla " & tabla)
+                                    End If
+                                Else
+                                    RegistrarErrorAdjunto("ExportarAdjuntosAlmacen", idRegistro, nombreArchivoLimpio, "FTPHosting", "FTPHosting.SubirArchivo devolvió False. Se mantiene sinc = 1.")
+                                End If
+
                             Catch exRow As Exception
-                                LogEventos.Escribir("Error al procesar registro en " & tabla & ": " & exRow.Message)
+                                RegistrarErrorAdjunto("ExportarAdjuntosAlmacen", idRegistro, nombreArchivo, "Excepcion", "Error no controlado procesando registro: " & exRow.Message)
+                            Finally
+                                ' Limpieza de archivo temporal si quedó remanente
+                                Try
+                                    If Not String.IsNullOrWhiteSpace(nombreArchivo) Then
+                                        Dim rutaTempClean As String = System.IO.Path.Combine(tempFolder, System.IO.Path.GetFileName(nombreArchivo))
+                                        If System.IO.File.Exists(rutaTempClean) Then
+                                            System.IO.File.Delete(rutaTempClean)
+                                        End If
+                                    End If
+                                Catch exClean As Exception
+                                End Try
                             End Try
                         Next
                     End If
@@ -3495,9 +3629,8 @@ intenta_otravz:
                 End Try
             Next
         Catch ex As Exception
-            LogEventos.Escribir("Error general en ExportarAdjuntos: " & ex.Message)
+            LogEventos.Escribir("Error general en ExportarAdjuntosAlmacen: " & ex.Message)
         End Try
-
 
     End Sub
 
@@ -3550,13 +3683,6 @@ intenta_otravz:
                 System.IO.Directory.CreateDirectory(tempFolder)
             End If
 
-            ' Directorios físicos locales candidatos donde reside /TB_RECIBOS
-            Dim rutasCandidatas() As String = {
-                "C:\HistoMedic\FTP_LFM\TB_RECIBOS",
-                "C:\HistoMedic\FTP\TB_RECIBOS",
-                System.IO.Path.Combine(Application.StartupPath, "TB_RECIBOS")
-            }
-
             Const CARPETA_DESTINO_REMOTA As String = "/sistema.lfmcontrol.com.mx/Assets/files/pases_salida/"
             Dim idsProcesados As New HashSet(Of Integer)()
             Dim ftpCentral As New FTPHosting()
@@ -3589,38 +3715,18 @@ intenta_otravz:
                 Dim rutaTemporalLocal As String = System.IO.Path.Combine(tempFolder, nombreArchivoLimpio)
 
                 Try
-                    ' 2. Localizar el archivo físicamente en TB_RECIBOS
+                    ' 2. Descarga exclusiva desde FTP local /TB_RECIBOS/
                     Dim localizado As Boolean = False
-
-                    ' A) Buscar primero en las rutas físicas directas del disco
-                    For Each dirCand As String In rutasCandidatas
-                        If System.IO.Directory.Exists(dirCand) Then
-                            Dim rutaFisicaDirecta As String = System.IO.Path.Combine(dirCand, nombreArchivoLimpio)
-                            If System.IO.File.Exists(rutaFisicaDirecta) Then
-                                Try
-                                    ' Copiar a ruta temporal para que FTPHosting (que elimina tras subir) no borre el original en TB_RECIBOS
-                                    System.IO.File.Copy(rutaFisicaDirecta, rutaTemporalLocal, True)
-                                    localizado = True
-                                    Exit For
-                                Catch exCopy As Exception
-                                    LogEventos.Escribir(String.Format("[Pases Salida Adjuntos] ID {0}: Error al copiar archivo local desde '{1}': {2}", idRegistro, rutaFisicaDirecta, exCopy.Message))
-                                End Try
-                            End If
+                    Dim rutaRemotaLocal As String = localFtpHost & "/TB_RECIBOS/" & nombreArchivoLimpio
+                    Try
+                        Dim descargado As Boolean = ftpLocalClient.DescargarArchivo(rutaRemotaLocal, rutaTemporalLocal)
+                        If descargado AndAlso System.IO.File.Exists(rutaTemporalLocal) Then
+                            localizado = True
                         End If
-                    Next
-
-                    ' B) Si no se encontró en disco local directo, descargar vía FTP local /TB_RECIBOS/
-                    If Not localizado Then
-                        Try
-                            Dim rutaRemotaLocal As String = localFtpHost & "/TB_RECIBOS/" & nombreArchivoLimpio
-                            Dim descargado As Boolean = ftpLocalClient.DescargarArchivo(rutaRemotaLocal, rutaTemporalLocal)
-                            If descargado AndAlso System.IO.File.Exists(rutaTemporalLocal) Then
-                                localizado = True
-                            End If
-                        Catch exDescarga As Exception
-                            LogEventos.Escribir(String.Format("[Pases Salida Adjuntos] ID {0}: Error al descargar desde FTP local /TB_RECIBOS/: {1}", idRegistro, exDescarga.Message))
-                        End Try
-                    End If
+                    Catch exDescarga As Exception
+                        LogEventos.Escribir(String.Format("[Pases Salida Adjuntos] ID {0}: Error al descargar desde FTP local /TB_RECIBOS/: {1}", idRegistro, exDescarga.Message))
+                        RegistrarErrorAdjunto("ExportarAdjuntosPasesSalida", idRegistro, nombreArchivoLimpio, "DescargaFTP", "Excepción al descargar de FTP local (" & rutaRemotaLocal & "): " & exDescarga.Message)
+                    End Try
 
                     ' 3. Verificar que el archivo exista y sea accesible
                     If Not localizado OrElse Not System.IO.File.Exists(rutaTemporalLocal) Then
