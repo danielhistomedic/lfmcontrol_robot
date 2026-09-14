@@ -35,8 +35,9 @@ Public Class frmInterface
     ' =========================================================================
     Private _servidorCentralConectado As Boolean = False
     Private _intentosReconexionCentral As Integer = 0
-    Private _estaReconectandoCentral As Boolean = False
-    Private WithEvents TimerReconexionCentral As New System.Windows.Forms.Timer()
+    Private _estaReconectandoCentral As Integer = 0
+    Private WithEvents TimerReconexionCentral As New System.Timers.Timer()
+    Private ReadOnly _lockReconexion As New Object()
 
     ' =========================================================================
     ' Control de Notificaciones a Compras (FLOWserve y DIVERSOS)
@@ -170,6 +171,10 @@ Public Class frmInterface
     ''' <summary>
     ''' Notifica y cambia el estado a desconectado, e inicia la rutina de reconexión controlada.
     ''' </summary>
+    ''' <summary>
+    ''' Notifica y cambia el estado a desconectado, e inicia la rutina de reconexión controlada.
+    ''' Es segura para ser llamada desde cualquier hilo (UI o segundo plano).
+    ''' </summary>
     Public Sub NotificarDesconexionCentral(Optional ByVal motivo As String = "")
         Dim estadoPrevioConectado As Boolean = _servidorCentralConectado
         _servidorCentralConectado = False
@@ -187,86 +192,139 @@ Public Class frmInterface
     End Sub
 
     ''' <summary>
-    ''' Inicia la rutina de reconexión controlada para el servidor central.
+    ''' Inicia la rutina de reconexión controlada para el servidor central con temporizador multihilo seguro.
     ''' Se ejecuta solo mientras la conexión central esté inactiva/desconectada.
     ''' </summary>
-    Private Sub IniciarRutinaReconexionCentral()
+    Private Sub IniciarRutinaReconexionCentral(Optional ByVal inmediato As Boolean = False)
         If _servidorCentralConectado Then
             DetenerRutinaReconexionCentral()
             Exit Sub
         End If
 
-        If Not TimerReconexionCentral.Enabled Then
-            ' Primer intento tras una breve pausa de 10 segundos
-            TimerReconexionCentral.Interval = 10000 ' 10 segundos
-            TimerReconexionCentral.Enabled = True
-            AgregarLog(100, "[Reconexión Central] Rutina de reconexión activada. Primer reintento en 10 segundos...")
-        End If
+        SyncLock _lockReconexion
+            If _estaReconectandoCentral <> 0 Then
+                Exit Sub
+            End If
+
+            If inmediato Then
+                TimerReconexionCentral.Stop()
+                _intentosReconexionCentral = 0
+                Task.Run(Sub() EjecutarReconexionCentralAsync())
+                Exit Sub
+            End If
+
+            If Not TimerReconexionCentral.Enabled Then
+                ' Primer intento tras una breve pausa de 20 segundos (permite estabilizar parpadeos de red sin saturar HostGator)
+                TimerReconexionCentral.AutoReset = False
+                TimerReconexionCentral.Interval = 20000 ' 20 segundos
+                TimerReconexionCentral.Start()
+                AgregarLog(100, "[Reconexión Central] Rutina de reconexión activada. Primer reintento seguro en 20 segundos (Protección HostGator)...")
+            End If
+        End SyncLock
     End Sub
 
     ''' <summary>
     ''' Detiene y desactiva la rutina de reconexión una vez restablecida la conexión central.
     ''' </summary>
     Private Sub DetenerRutinaReconexionCentral()
-        TimerReconexionCentral.Enabled = False
-        _intentosReconexionCentral = 0
-        _estaReconectandoCentral = False
+        SyncLock _lockReconexion
+            TimerReconexionCentral.Stop()
+            _intentosReconexionCentral = 0
+            Threading.Interlocked.Exchange(_estaReconectandoCentral, 0)
+        End SyncLock
     End Sub
 
     ''' <summary>
     ''' Cierra de manera segura cualquier conexión central existente para liberar sockets y recursos antes de reconectar.
+    ''' Limpia los pools de conexión de MySqlConnector para evitar reutilizar sockets rotos.
     ''' </summary>
     Private Sub CerrarConexionesCentrales()
         Try
-            If cx_MySQL_Central IsNot Nothing AndAlso cx_MySQL_Central.State <> ConnectionState.Closed Then
-                cx_MySQL_Central.Close()
+            If cx_MySQL_Central IsNot Nothing Then
+                If cx_MySQL_Central.State <> ConnectionState.Closed Then cx_MySQL_Central.Close()
+                MySqlConnector.MySqlConnection.ClearPool(cx_MySQL_Central)
             End If
         Catch ex As Exception
         End Try
 
         Try
-            If cx_MySQL_CentralAsync IsNot Nothing AndAlso cx_MySQL_CentralAsync.State <> ConnectionState.Closed Then
-                cx_MySQL_CentralAsync.Close()
+            If cx_MySQL_CentralAsync IsNot Nothing Then
+                If cx_MySQL_CentralAsync.State <> ConnectionState.Closed Then cx_MySQL_CentralAsync.Close()
+                MySqlConnector.MySqlConnection.ClearPool(cx_MySQL_CentralAsync)
             End If
         Catch ex As Exception
         End Try
 
         Try
-            If cx_MySQL_CentralAsyncALM IsNot Nothing AndAlso cx_MySQL_CentralAsyncALM.State <> ConnectionState.Closed Then
-                cx_MySQL_CentralAsyncALM.Close()
+            If cx_MySQL_CentralAsyncALM IsNot Nothing Then
+                If cx_MySQL_CentralAsyncALM.State <> ConnectionState.Closed Then cx_MySQL_CentralAsyncALM.Close()
+                MySqlConnector.MySqlConnection.ClearPool(cx_MySQL_CentralAsyncALM)
+            End If
+        Catch ex As Exception
+        End Try
+
+        Try
+            If cx_MySQL_Admin IsNot Nothing Then
+                If cx_MySQL_Admin.State <> ConnectionState.Closed Then cx_MySQL_Admin.Close()
+                MySqlConnector.MySqlConnection.ClearPool(cx_MySQL_Admin)
             End If
         Catch ex As Exception
         End Try
     End Sub
 
     ''' <summary>
-    ''' Temporizador de reconexión al servidor central con protección anti-bloqueo para HostGator:
-    ''' - Intento 1: 10 segundos
-    ''' - Intento 2: 30 segundos
-    ''' - Intento 3 en adelante: 5 minutos (300,000 ms) para proteger la IP contra bloqueos en el firewall de HostGator.
+    ''' Manejador del temporizador multihilo System.Timers.Timer para la reconexión al servidor central.
+    ''' Se ejecuta en segundo plano sin congelar la UI de la aplicación.
     ''' </summary>
-    Private Sub TimerReconexionCentral_Tick(sender As Object, e As EventArgs) Handles TimerReconexionCentral.Tick
-        If _estaReconectandoCentral Then Exit Sub
+    Private Sub TimerReconexionCentral_Elapsed(sender As Object, e As System.Timers.ElapsedEventArgs) Handles TimerReconexionCentral.Elapsed
+        EjecutarReconexionCentralAsync()
+    End Sub
+
+    ''' <summary>
+    ''' Ejecuta el proceso de reconexión segura con el servidor central:
+    ''' - Se ejecuta en segundo plano garantizando que la UI nunca se congele.
+    ''' - Usa Interlocked para evitar colisiones entre reconexiones simultáneas.
+    ''' - Aplica una política de backoff progresivo (20s, 60s, 180s, 300s) para no ser bloqueado por cPHulk/CSF de HostGator.
+    ''' </summary>
+    Private Sub EjecutarReconexionCentralAsync()
+        If Threading.Interlocked.CompareExchange(_estaReconectandoCentral, 1, 0) <> 0 Then
+            Exit Sub
+        End If
 
         Try
-            _estaReconectandoCentral = True
-            TimerReconexionCentral.Enabled = False
+            If _servidorCentralConectado Then
+                DetenerRutinaReconexionCentral()
+                Exit Sub
+            End If
 
             _intentosReconexionCentral += 1
-            AgregarLog(100, "[Reconexión Central] Ejecutando intento de reconexión #" & _intentosReconexionCentral & "...")
+            AgregarLog(100, "[Reconexión Central] Ejecutando intento seguro de reconexión #" & _intentosReconexionCentral & "...")
 
-            ' Cerrar sockets/conexiones previas antes de reintentar
+            ' Cerrar sockets/conexiones previas y limpiar pools antes de reintentar
             CerrarConexionesCentrales()
+
+            ' Si CLUES está vacía, intentar recuperarla desde la base de datos local
+            If String.IsNullOrWhiteSpace(Me.CLUES) Then
+                Try
+                    Dim tb_cat As DataTable = tb_Recordset_MySQL_local("Select cClues, cSiglas from cat_consultorio")
+                    If tb_cat IsNot Nothing AndAlso tb_cat.Rows.Count > 0 Then
+                        Me.CLUES = tb_cat.Rows(0).Item("cClues").ToString
+                        Me.cSiglas = tb_cat.Rows(0).Item("cSiglas").ToString
+                    End If
+                Catch exClues As Exception
+                End Try
+            End If
 
             Dim reconectado As Boolean = False
             If Not String.IsNullOrWhiteSpace(Me.CLUES) Then
                 reconectado = Me.Conectar_Central(Me.CLUES)
+            Else
+                AgregarLog(500, "[Reconexión Central] No se pudo obtener la clave CLUES para reconectar.")
             End If
 
             If reconectado Then
                 _servidorCentralConectado = True
                 _intentosReconexionCentral = 0
-                _estaReconectandoCentral = False
                 Me.HabilitarEstatusConexionCentral(True)
 
                 AgregarLog(200, "[Reconexión Central] ¡Conexión con el servidor central restablecida con éxito!")
@@ -275,40 +333,47 @@ Public Class frmInterface
                 If Me.chkActivar.Checked Then
                     Me.ReiniciarProcesoSP()
                 Else
-                    Me.chkActivar.Checked = True
+                    If Me.InvokeRequired Then
+                        Me.Invoke(Sub() Me.chkActivar.Checked = True)
+                    Else
+                        Me.chkActivar.Checked = True
+                    End If
                 End If
 
-                ' Desactivar rutina de reconexión ya que la conexión está restablecida
                 DetenerRutinaReconexionCentral()
-                Exit Sub
             Else
-                ' Falló el intento: Programar siguiente según la política de HostGator
-                Dim proximoIntervaloMs As Integer = 300000 ' 5 minutos (300,000 ms)
+                ' Falló el intento: Programar siguiente según la política anti-bloqueo de HostGator
+                Dim proximoIntervaloMs As Integer = 300000
                 Dim textoIntervalo As String = "5 minutos (Protección Anti-Bloqueo HostGator activa)"
 
-                If _intentosReconexionCentral = 1 Then
-                    ' Si falló el intento 1, reintento 2 en 30 segundos
-                    proximoIntervaloMs = 30000 ' 30 segundos
-                    textoIntervalo = "30 segundos"
-                Else
-                    ' A partir del 2do intento fallido (para intento 3 en adelante):
-                    ' HostGator bloquea IPs por conexiones fallidas repetidas. Reintento cada 5 minutos.
-                    proximoIntervaloMs = 300000 ' 5 minutos
-                    textoIntervalo = "5 minutos (Protección Anti-Bloqueo HostGator activa)"
-                End If
+                Select Case _intentosReconexionCentral
+                    Case 1
+                        proximoIntervaloMs = 60000 ' 1 minuto
+                        textoIntervalo = "1 minuto"
+                    Case 2
+                        proximoIntervaloMs = 180000 ' 3 minutos
+                        textoIntervalo = "3 minutos"
+                    Case Else
+                        ' A partir del 3er intento fallido: 5 minutos
+                        ' HostGator bloquea IPs por conexiones fallidas repetidas (cPHulk / CSF).
+                        proximoIntervaloMs = 300000 ' 5 minutos
+                        textoIntervalo = "5 minutos (Protección Anti-Bloqueo HostGator activa)"
+                End Select
 
-                AgregarLog(500, "[Reconexión Central] Intento #" & _intentosReconexionCentral & " fallido. Próximo intento programado en " & textoIntervalo & ".")
+                AgregarLog(500, "[Reconexión Central] Intento #" & _intentosReconexionCentral & " no completado. Próximo intento programado en " & textoIntervalo & ".")
 
-                _estaReconectandoCentral = False
+                TimerReconexionCentral.AutoReset = False
                 TimerReconexionCentral.Interval = proximoIntervaloMs
-                TimerReconexionCentral.Enabled = True
+                TimerReconexionCentral.Start()
             End If
 
         Catch ex As Exception
-            _estaReconectandoCentral = False
-            TimerReconexionCentral.Interval = 300000 ' 5 minutos ante excepciones
-            TimerReconexionCentral.Enabled = True
             AgregarLog(500, "[Reconexión Central] Error en proceso de reconexión: " & ex.Message & ". Reintentando en 5 minutos.")
+            TimerReconexionCentral.AutoReset = False
+            TimerReconexionCentral.Interval = 300000
+            TimerReconexionCentral.Start()
+        Finally
+            Threading.Interlocked.Exchange(_estaReconectandoCentral, 0)
         End Try
     End Sub
 
@@ -321,8 +386,11 @@ Public Class frmInterface
             Dim Pwd As String = ""
 
             ' ==================================================================================================================================
-            Dim cadena_conexion_admin As String = "Server=histomedic.mx;Database=mirtheda_admin;Uid=mirtheda_root;Pwd=Bsapmd2cKb*5;SSL Mode=None;"
-            If cx_MySQL_Admin.State = ConnectionState.Closed Then
+            ' Conexión al servidor de administración y licencias (histomedic.mx)
+            ' Parámetros de timeout y keepalive para evitar cuelgues de socket
+            Dim cadena_conexion_admin As String = "Server=histomedic.mx;Database=mirtheda_admin;Uid=mirtheda_root;Pwd=Bsapmd2cKb*5;SSL Mode=None;Connection Timeout=10;Default Command Timeout=30;Keepalive=60;"
+
+            If cx_MySQL_Admin Is Nothing OrElse cx_MySQL_Admin.State <> ConnectionState.Open Then
                 If Not Test_MySQL_Admin(cadena_conexion_admin) Then
                     _servidorCentralConectado = False
                     Me.HabilitarEstatusConexionCentral(False)
@@ -332,7 +400,7 @@ Public Class frmInterface
 
             tb_ClienteData = tb_Recordset_MySQL_Admin("SELECT * FROM ssf_clientes WHERE clues = '" & clues & "'")
             If tb_ClienteData Is Nothing OrElse tb_ClienteData.Rows.Count = 0 Then
-                AgregarLog(500, ".Error de Conexión con el Servidor (Cliente no encontrado). ")
+                AgregarLog(500, "[Central] Error de conexión con el Servidor (Cliente no encontrado en ssf_clientes).")
                 _servidorCentralConectado = False
                 Me.HabilitarEstatusConexionCentral(False)
                 Return False
@@ -343,35 +411,39 @@ Public Class frmInterface
             Pwd = tb_ClienteData.Rows(0).Item("db_pass").ToString
 
             If tb_ClienteData.Rows(0).Item("actualizaciones").ToString <> "SI" Then
-                AgregarLog(500, "No Disponible para actualizaciones. ")
+                AgregarLog(500, "[Central] No disponible para actualizaciones.")
                 _servidorCentralConectado = False
                 Me.HabilitarEstatusConexionCentral(False)
                 Return False
             End If
 
             ' ==================================================================================================================================
-
-            Dim cadena_conexion As String = "Server=lfmcontrol.com.mx;Database=" & Database & ";Uid=" & Uid & ";Pwd=" & Pwd & ";SSL Mode=None;"
+            ' Conexión a la base de datos de hosting del cliente (lfmcontrol.com.mx en HostGator)
+            Dim cadena_conexion As String = "Server=lfmcontrol.com.mx;Database=" & Database & ";Uid=" & Uid & ";Pwd=" & Pwd & ";SSL Mode=None;Connection Timeout=10;Default Command Timeout=30;Keepalive=60;"
 
             CerrarConexionesCentrales()
 
-            If Test_MySQL_Central(cadena_conexion) Then
-                Test_MySQL_CentralAsync(cadena_conexion)
-                Test_MySQL_CentralAsyncALM(cadena_conexion)
+            ' Validar que los 3 canales de conexión con HostGator se abran correctamente
+            If Test_MySQL_Central(cadena_conexion) AndAlso
+               Test_MySQL_CentralAsync(cadena_conexion) AndAlso
+               Test_MySQL_CentralAsyncALM(cadena_conexion) Then
+
                 _servidorCentralConectado = True
                 Me.HabilitarEstatusConexionCentral(True)
                 DetenerRutinaReconexionCentral()
                 Return True
             Else
+                CerrarConexionesCentrales()
                 _servidorCentralConectado = False
                 Me.HabilitarEstatusConexionCentral(False)
                 Return False
             End If
 
         Catch ex As Exception
+            CerrarConexionesCentrales()
             _servidorCentralConectado = False
             Me.HabilitarEstatusConexionCentral(False)
-            AgregarLog(500, ex.Message & ". Error al conectar a Servidor Central")
+            AgregarLog(500, "[Central] Error al conectar a Servidor Central: " & ex.Message)
             Return False
         End Try
 
@@ -778,6 +850,17 @@ Public Class frmInterface
                                 "tb_ventas_seguimiento",
                                 New HashSet(Of String)(StringComparer.OrdinalIgnoreCase) From {
                                     "sinc"
+                                }
+                            },
+                              {
+                                "tb_pases_salida",
+                                New HashSet(Of String)(StringComparer.OrdinalIgnoreCase) From {
+                                    "sinc",
+                                    "firma_recibe",
+                                    "fch_usuario_recibe",
+                                    "nombre_recibio_salida",
+                                    "ccveusuario_recibe",
+                                    "enviado"
                                 }
                             }
                         }
@@ -1404,26 +1487,23 @@ Public Class frmInterface
 
     End Function
 
-    Public Async Sub AgregarLog(ByVal tiempo As Integer, ByVal error_s As String)
-
-        ' Introducir un retraso de 2 segundos (2000 milisegundos)
-        Await System.Threading.Tasks.Task.Delay(tiempo)
-
+    Public Sub AgregarLog(ByVal tiempo As Integer, ByVal error_s As String)
         Try
             If lstLog.InvokeRequired Then
                 lstLog.Invoke(Sub()
                                   Dim item = lstLog.Items.Add(Calcula_FechaActual().ToString())
                                   item.SubItems.Add(error_s)
+                                  item.EnsureVisible()
                               End Sub)
             Else
                 Dim item = Me.lstLog.Items.Add(Calcula_FechaActual().ToString())
                 item.SubItems.Add(error_s)
+                item.EnsureVisible()
             End If
             LogEventos.Escribir("AgregarLog. " & error_s)
         Catch ex2 As Exception
             LogEventos.Escribir("AgregarLog. " & ex2.Message)
         End Try
-
     End Sub
 
     'DETENER proceso
@@ -1616,30 +1696,36 @@ intenta_otravz:
     End Function
 
     Public Function Test_MySQL_Admin(ByVal str_ConStr As String) As Boolean
-
-        Dim ciclo As Integer = 0
         Try
+            If cx_MySQL_Admin IsNot Nothing AndAlso cx_MySQL_Admin.State = ConnectionState.Open Then
+                Return True
+            End If
 
-intenta_otravz:
+            If cx_MySQL_Admin Is Nothing Then
+                cx_MySQL_Admin = New MySqlConnector.MySqlConnection()
+            ElseIf cx_MySQL_Admin.State <> ConnectionState.Closed Then
+                Try
+                    cx_MySQL_Admin.Close()
+                Catch
+                End Try
+            End If
 
-            If cx_MySQL_Admin.State = ConnectionState.Open Then Return True
             cx_MySQL_Admin.ConnectionString = str_ConStr
             cx_MySQL_Admin.Open()
 
-            Dim cmd As New MySqlConnector.MySqlCommand("SET time_zone = 'America/Mexico_City';", cx_MySQL_CentralAsyncALM)
-            cmd.ExecuteNonQuery()
+            Try
+                Using cmd As New MySqlConnector.MySqlCommand("SET time_zone = '-06:00';", cx_MySQL_Admin)
+                    cmd.CommandTimeout = 10
+                    cmd.ExecuteNonQuery()
+                End Using
+            Catch exZone As Exception
+            End Try
 
             Return True
         Catch ex As Exception
-
-            ciclo = ciclo + 1
-            If ciclo = 3 Then
-                Return False
-            End If
-            GoTo intenta_otravz
+            LogEventos.Escribir("Error Test_MySQL_Admin: " & ex.Message)
             Return False
         End Try
-
     End Function
 
     '****** Central Async ***********************************************
@@ -1781,30 +1867,36 @@ intenta_otravz:
     End Function
 
     Public Function Test_MySQL_CentralAsync(ByVal str_ConStr As String) As Boolean
-
-        Dim ciclo As Integer = 0
         Try
+            If cx_MySQL_CentralAsync IsNot Nothing AndAlso cx_MySQL_CentralAsync.State = ConnectionState.Open Then
+                Return True
+            End If
 
-intenta_otravz:
+            If cx_MySQL_CentralAsync Is Nothing Then
+                cx_MySQL_CentralAsync = New MySqlConnector.MySqlConnection()
+            ElseIf cx_MySQL_CentralAsync.State <> ConnectionState.Closed Then
+                Try
+                    cx_MySQL_CentralAsync.Close()
+                Catch
+                End Try
+            End If
 
-            If cx_MySQL_CentralAsync.State = ConnectionState.Open Then Return True
             cx_MySQL_CentralAsync.ConnectionString = str_ConStr
             cx_MySQL_CentralAsync.Open()
 
-            Dim cmd As New MySqlConnector.MySqlCommand("SET time_zone = 'America/Mexico_City';", cx_MySQL_CentralAsync)
-            cmd.ExecuteNonQuery()
+            Try
+                Using cmd As New MySqlConnector.MySqlCommand("SET time_zone = '-06:00';", cx_MySQL_CentralAsync)
+                    cmd.CommandTimeout = 10
+                    cmd.ExecuteNonQuery()
+                End Using
+            Catch exZone As Exception
+            End Try
 
             Return True
         Catch ex As Exception
-
-            ciclo = ciclo + 1
-            If ciclo = 3 Then
-                Return False
-            End If
-            GoTo intenta_otravz
+            LogEventos.Escribir("Error Test_MySQL_CentralAsync: " & ex.Message)
             Return False
         End Try
-
     End Function
 
     Private Function Update_FotoSistema_CentralAsync(ByVal Campo As String, ByVal Tabla As String, _
@@ -2018,30 +2110,36 @@ intenta_otravz:
     End Function
 
     Public Function Test_MySQL_CentralAsyncALM(ByVal str_ConStr As String) As Boolean
-
-        Dim ciclo As Integer = 0
         Try
+            If cx_MySQL_CentralAsyncALM IsNot Nothing AndAlso cx_MySQL_CentralAsyncALM.State = ConnectionState.Open Then
+                Return True
+            End If
 
-intenta_otravz:
+            If cx_MySQL_CentralAsyncALM Is Nothing Then
+                cx_MySQL_CentralAsyncALM = New MySqlConnector.MySqlConnection()
+            ElseIf cx_MySQL_CentralAsyncALM.State <> ConnectionState.Closed Then
+                Try
+                    cx_MySQL_CentralAsyncALM.Close()
+                Catch
+                End Try
+            End If
 
-            If cx_MySQL_CentralAsyncALM.State = ConnectionState.Open Then Return True
             cx_MySQL_CentralAsyncALM.ConnectionString = str_ConStr
             cx_MySQL_CentralAsyncALM.Open()
 
-            Dim cmd As New MySqlConnector.MySqlCommand("SET time_zone = 'America/Mexico_City';", cx_MySQL_CentralAsyncALM)
-            cmd.ExecuteNonQuery()
+            Try
+                Using cmd As New MySqlConnector.MySqlCommand("SET time_zone = '-06:00';", cx_MySQL_CentralAsyncALM)
+                    cmd.CommandTimeout = 10
+                    cmd.ExecuteNonQuery()
+                End Using
+            Catch exZone As Exception
+            End Try
 
             Return True
         Catch ex As Exception
-
-            ciclo = ciclo + 1
-            If ciclo = 3 Then
-                Return False
-            End If
-            GoTo intenta_otravz
+            LogEventos.Escribir("Error Test_MySQL_CentralAsyncALM: " & ex.Message)
             Return False
         End Try
-
     End Function
 
     Private Function Update_FotoSistema_CentralAsyncALM(ByVal Campo As String, ByVal Tabla As String, _
@@ -2259,30 +2357,36 @@ intenta_otravz:
     End Function
 
     Public Function Test_MySQL_Central(ByVal str_ConStr As String) As Boolean
-
-        Dim ciclo As Integer = 0
         Try
+            If cx_MySQL_Central IsNot Nothing AndAlso cx_MySQL_Central.State = ConnectionState.Open Then
+                Return True
+            End If
 
-intenta_otravz:
+            If cx_MySQL_Central Is Nothing Then
+                cx_MySQL_Central = New MySqlConnector.MySqlConnection()
+            ElseIf cx_MySQL_Central.State <> ConnectionState.Closed Then
+                Try
+                    cx_MySQL_Central.Close()
+                Catch
+                End Try
+            End If
 
-            If cx_MySQL_Central.State = ConnectionState.Open Then Return True
             cx_MySQL_Central.ConnectionString = str_ConStr
             cx_MySQL_Central.Open()
 
-            Dim cmd As New MySqlConnector.MySqlCommand("SET time_zone = 'America/Mexico_City';", cx_MySQL_Central)
-            cmd.ExecuteNonQuery()
+            Try
+                Using cmd As New MySqlConnector.MySqlCommand("SET time_zone = '-06:00';", cx_MySQL_Central)
+                    cmd.CommandTimeout = 10
+                    cmd.ExecuteNonQuery()
+                End Using
+            Catch exZone As Exception
+            End Try
 
             Return True
         Catch ex As Exception
-
-            ciclo = ciclo + 1
-            If ciclo = 3 Then
-                Return False
-            End If
-            GoTo intenta_otravz
+            LogEventos.Escribir("Error Test_MySQL_Central: " & ex.Message)
             Return False
         End Try
-
     End Function
 
     '*****************************************************
@@ -2958,6 +3062,8 @@ intenta_otravz:
 
     Private Sub frmMomitor_Load(ByVal sender As System.Object, ByVal e As System.EventArgs) Handles MyBase.Load
 
+        TimerReconexionCentral.AutoReset = False
+
         Me.Get_IpServidor()
 
         If Me.Conectar_Local() Then
@@ -2997,10 +3103,8 @@ intenta_otravz:
     Private Sub btnConectarDBCentral_Click(sender As Object, e As EventArgs) Handles btnConectarDBCentral.Click
 
         If Not _servidorCentralConectado Then
-            AgregarLog(100, "[Manual] Verificando e intentando reconexión al servidor central...")
-            TimerReconexionCentral.Enabled = False
-            TimerReconexionCentral.Interval = 1000 ' Iniciar reintento inmediato
-            TimerReconexionCentral.Enabled = True
+            AgregarLog(100, "[Manual] Verificando e intentando reconexión inmediata al servidor central...")
+            IniciarRutinaReconexionCentral(inmediato:=True)
         Else
             AgregarLog(200, "[Central] La conexión al servidor central ya se encuentra activa y funcional.")
         End If
@@ -3579,7 +3683,7 @@ intenta_otravz:
                 Return
             End If
 
-            AgregarLog(100, String.Format("[{0}] Se encontraron {1} partidas pendientes de cotizar. Generando correo HTML...", tipoNotificacion, dtPartidas.Rows.Count))
+            'AgregarLog(100, String.Format("[{0}] Se encontraron {1} partidas pendientes de cotizar. Generando correo HTML...", tipoNotificacion, dtPartidas.Rows.Count))
 
             ' 4. Generar HTML y Asunto
             Dim htmlCuerpo As String = GenerarHtmlCotizacionesPendientes(tipoNotificacion, dtPartidas, frecuenciaDias)
@@ -3603,7 +3707,7 @@ intenta_otravz:
                     cmmUpd.ExecuteNonQuery()
                 End Using
 
-                AgregarLog(200, String.Format("[{0}] Notificación enviada con éxito a: {1}{2} ({3} partidas notificadas).", tipoNotificacion, destinatarios, If(Not String.IsNullOrWhiteSpace(correosDirectivos), " [CC: " & correosDirectivos & "]", ""), dtPartidas.Rows.Count))
+                'AgregarLog(200, String.Format("[{0}] Notificación enviada con éxito a: {1}{2} ({3} partidas notificadas).", tipoNotificacion, destinatarios, If(Not String.IsNullOrWhiteSpace(correosDirectivos), " [CC: " & correosDirectivos & "]", ""), dtPartidas.Rows.Count))
             Else
                 AgregarLog(500, String.Format("[{0}] Error al enviar correo a: {1}. Se reintentará en el próximo ciclo.", tipoNotificacion, destinatarios))
             End If
@@ -4370,7 +4474,7 @@ intenta_otravz:
                 Return
             End If
 
-            AgregarLog(100, String.Format("[Informe Ejecutivo Proyectos] Procesando {0} proyectos (a partir del 24/08/2026). Generando informe HTML...", listaProyectos.Count))
+            'AgregarLog(100, String.Format("[Informe Ejecutivo Proyectos] Procesando {0} proyectos (a partir del 24/08/2026). Generando informe HTML...", listaProyectos.Count))
 
             ' 5. Obtener snapshots históricos previos (ayer y hace 7 días) para el comparativo
             Dim dtSnapAyer As DataTable = ObtenerSnapshotHistorico(1)
@@ -4397,7 +4501,7 @@ intenta_otravz:
                 ' 8. Guardar snapshot del día en tb_informe_proyectos_historico
                 GuardarSnapshotHistoricoProyectos(listaProyectos)
 
-                AgregarLog(200, String.Format("[Informe Ejecutivo Proyectos] Notificación diaria enviada con éxito a: {0} ({1} proyectos reportados).", destinatarios, listaProyectos.Count))
+                'AgregarLog(200, String.Format("[Informe Ejecutivo Proyectos] Notificación diaria enviada con éxito a: {0} ({1} proyectos reportados).", destinatarios, listaProyectos.Count))
                 LogEventos.Escribir(String.Format("[Informe Ejecutivo Proyectos] Notificación enviada exitosamente a: {0}", destinatarios))
             Else
                 AgregarLog(500, String.Format("[Informe Ejecutivo Proyectos] Error al enviar correo a: {0}. Se reintentará en el próximo ciclo.", destinatarios))
@@ -5918,8 +6022,8 @@ intenta_otravz:
                 Dim enviadoExitoso As Boolean = EnviarCorreoNotificacionHTML(resumen.Email, asunto, htmlCuerpo, correosDirectivos)
                 If enviadoExitoso Then
                     totalVendedoresNotificados += 1
-                    AgregarLog(100, String.Format("[Seguimiento Ventas] Notificación enviada a {0} ({1}){2} - Cotiz. Cliente: {3}, Cotiz. Internas: {4}.",
-                                                  nomVendedor, resumen.Email, If(Not String.IsNullOrWhiteSpace(correosDirectivos), " [CC: " & correosDirectivos & "]", ""), resumen.CotizacionesCliente.Count, resumen.CotizacionesInternas.Count))
+                    'AgregarLog(100, String.Format("[Seguimiento Ventas] Notificación enviada a {0} ({1}){2} - Cotiz. Cliente: {3}, Cotiz. Internas: {4}.",
+                    '                              nomVendedor, resumen.Email, If(Not String.IsNullOrWhiteSpace(correosDirectivos), " [CC: " & correosDirectivos & "]", ""), resumen.CotizacionesCliente.Count, resumen.CotizacionesInternas.Count))
                     RegistrarLogEnvioVentas(cveVendedor, nomVendedor, resumen.Email, resumen.CotizacionesCliente.Count, resumen.CotizacionesInternas.Count, True, "Enviado con éxito")
                 Else
                     AgregarLog(500, String.Format("[Seguimiento Ventas] Error al enviar correo a {0} ({1}).", nomVendedor, resumen.Email))
@@ -6534,9 +6638,9 @@ intenta_otravz:
             Dim enviadoExitoso As Boolean = EnviarCorreoNotificacionHTML(destinatarios, asunto, htmlCuerpo, correosDirectivos)
             If enviadoExitoso Then
                 fechaUltimoEnvio = DateTime.Now
-                AgregarLog(100, String.Format("[Seguimiento Compras - {0}] Notificación enviada a {1}{2} - Total: {3} (Sin Solicitud: {4}, En Cotización: {5}).",
-                                              tipoGrupo, destinatarios, If(Not String.IsNullOrWhiteSpace(correosDirectivos), " [CC: " & correosDirectivos & "]", ""),
-                                              resumen.TotalOportunidades, resumen.OportunidadesSinSolicitud.Count, resumen.OportunidadesEnCotizacion.Count))
+                'AgregarLog(100, String.Format("[Seguimiento Compras - {0}] Notificación enviada a {1}{2} - Total: {3} (Sin Solicitud: {4}, En Cotización: {5}).",
+                '                              tipoGrupo, destinatarios, If(Not String.IsNullOrWhiteSpace(correosDirectivos), " [CC: " & correosDirectivos & "]", ""),
+                '                              resumen.TotalOportunidades, resumen.OportunidadesSinSolicitud.Count, resumen.OportunidadesEnCotizacion.Count))
                 RegistrarLogEnvioCompras(tipoGrupo, destinatarios, resumen.TotalOportunidades, resumen.OportunidadesSinSolicitud.Count, resumen.OportunidadesEnCotizacion.Count, True, "Enviado con éxito")
             Else
                 AgregarLog(500, String.Format("[Seguimiento Compras - {0}] Error al enviar correo a {1}.", tipoGrupo, destinatarios))
