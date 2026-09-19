@@ -3987,6 +3987,7 @@ intenta_otravz:
                 "  COALESCE(v.cliente_final, '') AS cliente_final, " & _
                 "  COALESCE(p.cDatGenRazonSocial, p.cDatGenNombreAbreviado, 'PROVEEDOR NO ASIGNADO') AS proveedor_nombre, " & _
                 "  cd.id AS detalle_id, " & _
+                "  COALESCE(vd.codigo_partida, '') AS codigo_partida, " & _
                 "  CAST(COALESCE(NULLIF(vd.codigo_partida, ''), cd.venta_detalle_id_partida, cd.id) AS CHAR) AS partida_num, " & _
                 "  COALESCE(cd.descripcion_proveedor, '') AS descripcion_proveedor, " & _
                 "  COALESCE(cd.descripcion_adicional, '') AS descripcion_adicional, " & _
@@ -4426,7 +4427,10 @@ intenta_otravz:
                 ' Nivel 3: Solicitudes de Cotización de este Proveedor
                 For Each cotIdStr In cotizacionIdsProv
                     Dim idCurrent As String = cotIdStr
-                    Dim rowsCot As DataRow() = rowsProv.Where(Function(r) r("cotizacion_id").ToString() = idCurrent).ToArray()
+                    Dim rowsCot As DataRow() = rowsProv.Where(Function(r) r("cotizacion_id").ToString() = idCurrent) _
+                                                          .OrderBy(Function(r) If(IsDBNull(r("codigo_partida")), "", r("codigo_partida").ToString()), StringComparer.OrdinalIgnoreCase) _
+                                                          .ThenBy(Function(r) Convert.ToInt64(r("detalle_id"))) _
+                                                          .ToArray()
                     If rowsCot.Length = 0 Then Continue For
 
                     Dim primerRow As DataRow = rowsCot(0)
