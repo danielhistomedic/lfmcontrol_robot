@@ -3282,13 +3282,17 @@ intenta_otravz:
                             Dim nombreArchivo As String = ""
 
                             Try
-                                If IsDBNull(row("archivo")) OrElse String.IsNullOrWhiteSpace(row("archivo").ToString()) Then
-                                    RegistrarErrorAdjunto("ExportarAdjuntos", idRegistro, "", "Validacion", "Campo 'archivo' vacío o nulo en tabla " & tabla & ". Se mantiene sinc = 1.")
+                                ' Validar campo archivo: si es NULL, Nothing, cadena vacía o espacios, ignorar y continuar sin registrar error
+                                If String.IsNullOrWhiteSpace(Convert.ToString(row("archivo"))) Then
                                     Continue For
                                 End If
 
-                                nombreArchivo = row("archivo").ToString().Trim()
+                                nombreArchivo = Convert.ToString(row("archivo")).Trim()
                                 Dim nombreArchivoLimpio As String = System.IO.Path.GetFileName(nombreArchivo)
+                                If String.IsNullOrWhiteSpace(nombreArchivoLimpio) Then
+                                    Continue For
+                                End If
+
                                 Dim rutaTemporalLocal As String = System.IO.Path.Combine(tempFolder, nombreArchivoLimpio)
 
                                 ' 1. Descarga exclusiva desde FTP local /TB_VENTAS/
@@ -3413,18 +3417,18 @@ intenta_otravz:
                     Dim huboFalloEnAlgunaImagen As Boolean = False
 
                     For i As Integer = 1 To 5
-                        Dim nombreArchivo As String = ""
-                        If Not IsDBNull(row("img" & i)) Then
-                            nombreArchivo = row("img" & i).ToString().Trim()
+                        ' Si la columna no tiene imagen válida, ignorar y continuar con la siguiente
+                        If String.IsNullOrWhiteSpace(Convert.ToString(row("img" & i))) Then
+                            Continue For
                         End If
 
-                        ' Si la columna no tiene imagen, continuar con la siguiente
-                        If String.IsNullOrWhiteSpace(nombreArchivo) Then
+                        Dim nombreArchivo As String = Convert.ToString(row("img" & i)).Trim()
+                        Dim nombreArchivoLimpio As String = System.IO.Path.GetFileName(nombreArchivo)
+                        If String.IsNullOrWhiteSpace(nombreArchivoLimpio) Then
                             Continue For
                         End If
 
                         totalImagenesDefinidas += 1
-                        Dim nombreArchivoLimpio As String = System.IO.Path.GetFileName(nombreArchivo)
                         Dim rutaTemporalLocal As String = System.IO.Path.Combine(tempFolder, nombreArchivoLimpio)
 
                         Try
@@ -3554,13 +3558,17 @@ intenta_otravz:
                             Dim nombreArchivo As String = ""
 
                             Try
-                                If IsDBNull(row("documento_ftp")) OrElse String.IsNullOrWhiteSpace(row("documento_ftp").ToString()) Then
-                                    RegistrarErrorAdjunto("ExportarAdjuntosAlmacen", idRegistro, "", "Validacion", "Campo 'documento_ftp' vacío o nulo en tabla " & tabla & ". Se mantiene sinc = 1.")
+                                ' Validar campo documento_ftp: si es NULL, Nothing, cadena vacía o espacios, ignorar y continuar sin registrar error
+                                If String.IsNullOrWhiteSpace(Convert.ToString(row("documento_ftp"))) Then
                                     Continue For
                                 End If
 
-                                nombreArchivo = row("documento_ftp").ToString().Trim()
+                                nombreArchivo = Convert.ToString(row("documento_ftp")).Trim()
                                 Dim nombreArchivoLimpio As String = System.IO.Path.GetFileName(nombreArchivo)
+                                If String.IsNullOrWhiteSpace(nombreArchivoLimpio) Then
+                                    Continue For
+                                End If
+
                                 Dim rutaTemporalLocal As String = System.IO.Path.Combine(tempFolder, nombreArchivoLimpio)
 
                                 ' 1. Descarga exclusiva desde FTP local /TB_RECIBOS/
@@ -3700,18 +3708,17 @@ intenta_otravz:
                 End If
                 idsProcesados.Add(idRegistro)
 
-                Dim nombreArchivo As String = ""
-                If Not IsDBNull(row("archivo")) Then
-                    nombreArchivo = row("archivo").ToString().Trim()
-                End If
-
-                If String.IsNullOrWhiteSpace(nombreArchivo) Then
-                    LogEventos.Escribir(String.Format("[Pases Salida Adjuntos] ID {0}: Nombre de archivo vacío o nulo. Se mantiene sinc = 1.", idRegistro))
+                ' Validar campo archivo: si es NULL, Nothing, cadena vacía o espacios, ignorar y continuar sin registrar error
+                If String.IsNullOrWhiteSpace(Convert.ToString(row("archivo"))) Then
                     Continue For
                 End If
 
-                ' Limpiar caracteres o rutas relativas si vinieran en el nombre
+                Dim nombreArchivo As String = Convert.ToString(row("archivo")).Trim()
                 Dim nombreArchivoLimpio As String = System.IO.Path.GetFileName(nombreArchivo)
+                If String.IsNullOrWhiteSpace(nombreArchivoLimpio) Then
+                    Continue For
+                End If
+
                 Dim rutaTemporalLocal As String = System.IO.Path.Combine(tempFolder, nombreArchivoLimpio)
 
                 Try
