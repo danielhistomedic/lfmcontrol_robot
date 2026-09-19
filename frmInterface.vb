@@ -4780,9 +4780,6 @@ intenta_otravz:
                 End Try
             End If
 
-            ' 2. Asegurar que la tabla histórica exista para almacenar snapshots y comparativos
-            AsegurarTablaHistoricaProyectos()
-
             ' Validar en BD si hoy ya se registró el snapshot (evita envíos duplicados ante reinicios del robot)
             If Not forzarEnvio Then
                 Dim sqlCheckHoy As String = "SELECT COUNT(*) FROM tb_informe_proyectos_historico WHERE fecha = CURDATE()"
@@ -4852,37 +4849,6 @@ intenta_otravz:
             LogEventos.Escribir("Error en NotificarInformeEjecutivoProyectos: " & ex.Message & " - Stack: " & ex.StackTrace)
         Finally
             _procesandoInformeProyectos = False
-        End Try
-    End Sub
-
-    ''' <summary>
-    ''' Asegura la creación de la tabla histórica de proyectos si aún no existe.
-    ''' </summary>
-    Private Sub AsegurarTablaHistoricaProyectos()
-        Try
-            Dim sqlCreate As String =
-                "CREATE TABLE IF NOT EXISTS tb_informe_proyectos_historico (" & _
-                "  id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, " & _
-                "  fecha DATE NOT NULL, " & _
-                "  venta_id INT UNSIGNED NOT NULL, " & _
-                "  proyecto_id VARCHAR(45) NOT NULL, " & _
-                "  estatus_proyecto_id INT UNSIGNED NOT NULL, " & _
-                "  semaforo VARCHAR(15) NOT NULL, " & _
-                "  dias_sin_movimiento INT NOT NULL, " & _
-                "  monto DOUBLE NOT NULL DEFAULT 0, " & _
-                "  moneda VARCHAR(10) NOT NULL DEFAULT 'MXN', " & _
-                "  vendedor VARCHAR(150) NOT NULL, " & _
-                "  clasificacion VARCHAR(100) NOT NULL, " & _
-                "  atrasado TINYINT(1) NOT NULL DEFAULT 0, " & _
-                "  fecha_registro DATETIME NOT NULL, " & _
-                "  INDEX idx_fecha (fecha), " & _
-                "  INDEX idx_proyecto (proyecto_id) " & _
-                ");"
-            Using cmm As New MySqlConnector.MySqlCommand(sqlCreate, cx_MySQL_local)
-                cmm.ExecuteNonQuery()
-            End Using
-        Catch ex As Exception
-            LogEventos.Escribir("Error en AsegurarTablaHistoricaProyectos: " & ex.Message)
         End Try
     End Sub
 
@@ -6223,34 +6189,6 @@ intenta_otravz:
     End Class
 
     ''' <summary>
-    ''' Asegura la creación de la tabla de control histórico para registrar los envíos diarios a vendedores.
-    ''' </summary>
-    Private Sub AsegurarTablaLogSeguimientoVentas()
-        Try
-            Dim sqlCreate As String =
-                "CREATE TABLE IF NOT EXISTS tb_seguimiento_ventas_envio_log (" & _
-                "  id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, " & _
-                "  fecha DATE NOT NULL, " & _
-                "  ccveusuario_vendedor VARCHAR(45) NOT NULL, " & _
-                "  vendedor_nombre VARCHAR(150) NOT NULL, " & _
-                "  email VARCHAR(150) NOT NULL, " & _
-                "  total_cotizaciones_cliente INT NOT NULL DEFAULT 0, " & _
-                "  total_cotizaciones_internas INT NOT NULL DEFAULT 0, " & _
-                "  enviado TINYINT(1) NOT NULL DEFAULT 0, " & _
-                "  fchregistro DATETIME NOT NULL, " & _
-                "  mensaje_error TEXT, " & _
-                "  INDEX idx_fecha (fecha), " & _
-                "  INDEX idx_vendedor (ccveusuario_vendedor) " & _
-                ");"
-            Using cmm As New MySqlConnector.MySqlCommand(sqlCreate, cx_MySQL_local)
-                cmm.ExecuteNonQuery()
-            End Using
-        Catch ex As Exception
-            LogEventos.Escribir("Error en AsegurarTablaLogSeguimientoVentas: " & ex.Message)
-        End Try
-    End Sub
-
-    ''' <summary>
     ''' Rutina matutina programada para enviarse de lunes a viernes a las 8:15 AM
     ''' a cada vendedor con el seguimiento individualizado de:
     ''' 1) Cotizaciones de clientes pendientes de recibir Orden de Compra (Estatus 5).
@@ -6288,9 +6226,6 @@ intenta_otravz:
                     Return
                 End Try
             End If
-
-            ' Asegurar tabla de bitácora histórica de envíos
-            AsegurarTablaLogSeguimientoVentas()
 
             ' Obtener correos de directivos para envío en copia (CC) desde cat_consultorio
             Dim correosDirectivos As String = ""
@@ -6803,34 +6738,6 @@ intenta_otravz:
     End Class
 
     ''' <summary>
-    ''' Crea la tabla tb_seguimiento_compras_envio_log en la BD local si no existe,
-    ''' para bitácora y auditoría de envíos diarios a compras.
-    ''' </summary>
-    Private Sub AsegurarTablaLogSeguimientoCompras()
-        Try
-            Dim sqlCreate As String =
-                "CREATE TABLE IF NOT EXISTS tb_seguimiento_compras_envio_log (" & _
-                "  id INT AUTO_INCREMENT PRIMARY KEY, " & _
-                "  fecha DATE NOT NULL, " & _
-                "  grupo VARCHAR(45) NOT NULL, " & _
-                "  destinatarios VARCHAR(500) NULL, " & _
-                "  total_oportunidades INT DEFAULT 0, " & _
-                "  total_sin_solicitud INT DEFAULT 0, " & _
-                "  total_en_proceso INT DEFAULT 0, " & _
-                "  enviado TINYINT(1) DEFAULT 0, " & _
-                "  fchregistro DATETIME NULL, " & _
-                "  mensaje_error TEXT NULL, " & _
-                "  INDEX idx_fecha_grupo (fecha, grupo)" & _
-                ") ENGINE=InnoDB DEFAULT CHARSET=utf8;"
-            Using cmm As New MySqlConnector.MySqlCommand(sqlCreate, cx_MySQL_local)
-                cmm.ExecuteNonQuery()
-            End Using
-        Catch ex As Exception
-            LogEventos.Escribir("Error en AsegurarTablaLogSeguimientoCompras: " & ex.Message)
-        End Try
-    End Sub
-
-    ''' <summary>
     ''' Registra en tb_seguimiento_compras_envio_log el resultado del envío diario.
     ''' </summary>
     Private Sub RegistrarLogEnvioCompras(ByVal grupo As String, ByVal destinatarios As String,
@@ -6881,9 +6788,6 @@ intenta_otravz:
                     Return
                 End Try
             End If
-
-            ' Asegurar tabla de bitácora histórica de envíos
-            AsegurarTablaLogSeguimientoCompras()
 
             ' A) Procesar Grupo FLOWSERVE: clasificacion_proyecto_id IN (2, 3, 4, 6)
             ProcesarSeguimientoComprasGrupo("FLOWSERVE", "correos_segcot_compras_flowserve", New Integer() {2, 3, 4, 6}, _fechaUltimoEnvioSeguimientoComprasFlowserve, forzarEnvio)
