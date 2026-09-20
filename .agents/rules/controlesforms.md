@@ -6,6 +6,9 @@ trigger: always_on
 * Para el resto de controles internos del formulario usa la fuente: MS Reference Sans Serif, 8.25pt, color rgb: 15, 10, 74
 * Los TexBoxX habilita la propiedad FocusHighlightEnabled = True
 * En los controles DataGridViewX siempre habilita la propiedad multiselect = true, BorderStyle = Fixed3D
+* permite el uso nativo de acentos y la ñ en toda la clase
+* Los contorles CrystalReportsViewer siempre habilita la propiedad BorderStyle = None
+* Los controles Label deben tener la propiedad AutoSize = False
 * Cuando envies un mensaje de advertencia solo infromativo usa Funciones.Msj_AdvOnly, si es de advertencia para que el usuario indique si/no, utiliza Funciones.Msj_Adv
 * Antes de la instrucción HisConectores.Delete
  se debe usar:
