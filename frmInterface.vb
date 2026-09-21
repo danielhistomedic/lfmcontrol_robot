@@ -1095,9 +1095,11 @@ Public Class frmInterface
 
             Try
                 If ProgressBarX_SPALM.InvokeRequired Then
-                    lstLog.Invoke(Sub() Me.ProgressBarX_SPALM.Minimum = 0)
-                    lstLog.Invoke(Sub() Me.ProgressBarX_SPALM.Maximum = tb_his_replica_local.Rows.Count)
-                    lstLog.Invoke(Sub() Me.ProgressBarX_SPALM.Text = "0 de " & tb_his_replica_local.Rows.Count)
+                    ProgressBarX_SPALM.Invoke(Sub()
+                                                  Me.ProgressBarX_SPALM.Minimum = 0
+                                                  Me.ProgressBarX_SPALM.Maximum = tb_his_replica_local.Rows.Count
+                                                  Me.ProgressBarX_SPALM.Text = "0 de " & tb_his_replica_local.Rows.Count
+                                              End Sub)
                 Else
                     Me.ProgressBarX_SPALM.Minimum = 0
                     Me.ProgressBarX_SPALM.Maximum = tb_his_replica_local.Rows.Count
@@ -1267,9 +1269,37 @@ Public Class frmInterface
                             cache_campos(table_name) = tb_campos
                         End If
 
+                        ' Diccionario con las columnas excluidas por tabla para UPDATE
+                        Dim columnasExcluidas As New Dictionary(Of String, HashSet(Of String))(StringComparer.OrdinalIgnoreCase) From {
+                            {
+                                "tb_notasalida",
+                                New HashSet(Of String)(StringComparer.OrdinalIgnoreCase) From {
+                                    "sinc",
+                                    "firma_recibe",
+                                    "iFirmaRecibe",
+                                    "fch_usuario_recibe",
+                                    "cRecibeNotaExterna",
+                                    "cNombreRecibe",
+                                    "ccveusuarioRecibe"
+                                }
+                            }
+                        }
+
+                        Dim columnasExcluir As HashSet(Of String) = Nothing
+
+                        If Not columnasExcluidas.TryGetValue(table_name, columnasExcluir) Then
+                            'Si la tabla no existe en el diccionario, no excluye ninguna columna
+                            columnasExcluir = New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+                        End If
+
                         For col As Integer = 0 To tb_campos.Rows.Count - 1
 
                             campo_nombre = tb_campos.Rows(col).Item("Field").ToString
+
+                            ' Excluir columnas específicas de la tabla (ej. firma digital y acuse en tb_notasalida)
+                            If columnasExcluir.Contains(campo_nombre) Then
+                                Continue For
+                            End If
 
                             Dim tipo As String = ""
                             tipo = tb_campos.Rows(col).Item("Type")
@@ -1369,16 +1399,22 @@ Public Class frmInterface
 
                 End If
 
-                Try
-                    If ProgressBarX_SPALM.InvokeRequired Then
-                        ProgressBarX_SPALM.Invoke(Sub() Me.ProgressBarX_SPALM.Value = Me.ProgressBarX_SPALM.Value + 1)
-                        ProgressBarX_SPALM.Invoke(Sub() Me.ProgressBarX_SPALM.Text = "" & Me.ProgressBarX_SPALM.Value & " de " & tb_his_replica_local.Rows.Count)
-                    Else
-                        Me.ProgressBarX_SPALM.Value = Me.ProgressBarX_SPALM.Value + 1
-                        Me.ProgressBarX_SPALM.Text = "" & Me.ProgressBarX_SPALM.Value & " de " & tb_his_replica_local.Rows.Count
-                    End If
-                Catch ex2 As Exception
-                End Try
+                ' Optimización del progreso de la barra de progreso (throttling de UI)
+                Dim current_val As Integer = i + 1
+                If i Mod 10 = 0 OrElse i = tb_his_replica_local.Rows.Count - 1 Then
+                    Try
+                        If ProgressBarX_SPALM.InvokeRequired Then
+                            ProgressBarX_SPALM.Invoke(Sub()
+                                                          Me.ProgressBarX_SPALM.Value = current_val
+                                                          Me.ProgressBarX_SPALM.Text = current_val.ToString() & " de " & tb_his_replica_local.Rows.Count
+                                                      End Sub)
+                        Else
+                            Me.ProgressBarX_SPALM.Value = current_val
+                            Me.ProgressBarX_SPALM.Text = current_val.ToString() & " de " & tb_his_replica_local.Rows.Count
+                        End If
+                    Catch ex2 As Exception
+                    End Try
+                End If
 
             Next
 
@@ -1389,7 +1425,7 @@ Public Class frmInterface
             End If
 
             '== Eliminar Cargados === 
-            Delete_localAsync("DELETE from his_replica " & _
+            Delete_localAsyncALM("DELETE from his_replica " & _
                                 "WHERE " & _
                                 "tabla_afectada IN (" & _
                                 "" & GetQuery_TablasAlmacen() & "" & _
