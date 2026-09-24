@@ -4065,6 +4065,8 @@ intenta_otravz:
                 "LEFT JOIN tb_proveedores p ON c.proveedor_id = p.icveProveedor " & _
                 "WHERE c.enviado = 0 and c.omitir_informe = 0 " & _
                 "  AND (cd.precio_unitario = 0 OR cd.precio_unitario IS NULL) " & _
+                "  AND (v.estatus_proyecto_id IS NULL OR v.estatus_proyecto_id <> 2) " & _
+                "  AND (v.activo IS NULL OR v.activo <> 'CERRADO') " & _
                 "  AND v.clasificacion_proyecto_id IN (" & String.Join(",", paramNames) & ") " & _
                 "ORDER BY cp.clasificacion, COALESCE(p.cDatGenRazonSocial, p.cDatGenNombreAbreviado, 'PROVEEDOR NO ASIGNADO'), c.folio_solicitud, cd.id;"
 
@@ -5650,14 +5652,15 @@ intenta_otravz:
     Private Function GenerarPendientesProyectosHtml(ByVal proyectos As List(Of ItemProyectoInforme)) As String
         Dim sb As New System.Text.StringBuilder()
 
-        Dim pendOCCliente As Integer = proyectos.Where(Function(p) p.EstatusId = 5 AndAlso Not p.EsCanceladoODeclinado).Count()
-        Dim pendCotInterna As Integer = proyectos.Where(Function(p) p.PendienteCotizacionInterna AndAlso Not p.EsCanceladoODeclinado).Count()
-        Dim procesoCotProv As Integer = proyectos.Where(Function(p) ((p.EstatusId = 1 AndAlso p.Enviada = 1) OrElse (p.EstatusId = 3 AndAlso Not p.PendienteCotizacionInterna)) AndAlso Not p.EsCanceladoODeclinado).Count()
-        Dim pendEnviarCotCli As Integer = proyectos.Where(Function(p) p.EstatusId = 4 AndAlso Not p.EsCanceladoODeclinado).Count()
-        Dim pendRespCliente As Integer = proyectos.Where(Function(p) p.EstatusId = 5 AndAlso p.TotalCotizacionesCliente > 0 AndAlso Not p.EsCanceladoODeclinado).Count()
-        Dim pendInfo As Integer = proyectos.Where(Function(p) p.EstatusId = 1 AndAlso p.Enviada = 0 AndAlso Not p.EsCanceladoODeclinado).Count()
-        Dim fchCompVencida As Integer = proyectos.Where(Function(p) p.FechaCompromiso.HasValue AndAlso p.DiasParaCompromiso.HasValue AndAlso p.DiasParaCompromiso.Value < 0 AndAlso Not p.EsCanceladoODeclinado).Count()
-        Dim sinMov4d As Integer = proyectos.Where(Function(p) p.DiasSinMovimiento >= 4 AndAlso Not p.EsCanceladoODeclinado).Count()
+        Dim proyectosVigentes As List(Of ItemProyectoInforme) = proyectos.Where(Function(p) Not p.EsCanceladoODeclinado).ToList()
+        Dim pendOCCliente As Integer = proyectosVigentes.Where(Function(p) p.EstatusId = 5).Count()
+        Dim pendCotInterna As Integer = proyectosVigentes.Where(Function(p) p.PendienteCotizacionInterna).Count()
+        Dim procesoCotProv As Integer = proyectosVigentes.Where(Function(p) (p.EstatusId = 1 AndAlso p.Enviada = 1) OrElse (p.EstatusId = 3 AndAlso Not p.PendienteCotizacionInterna)).Count()
+        Dim pendEnviarCotCli As Integer = proyectosVigentes.Where(Function(p) p.EstatusId = 4).Count()
+        Dim pendRespCliente As Integer = proyectosVigentes.Where(Function(p) p.EstatusId = 5 AndAlso p.TotalCotizacionesCliente > 0).Count()
+        Dim pendInfo As Integer = proyectosVigentes.Where(Function(p) p.EstatusId = 1 AndAlso p.Enviada = 0).Count()
+        Dim fchCompVencida As Integer = proyectosVigentes.Where(Function(p) p.FechaCompromiso.HasValue AndAlso p.DiasParaCompromiso.HasValue AndAlso p.DiasParaCompromiso.Value < 0).Count()
+        Dim sinMov4d As Integer = proyectosVigentes.Where(Function(p) p.DiasSinMovimiento >= 4).Count()
 
         sb.AppendLine("    <div class=""sec-heading"" style=""font-size: 15px; font-weight: 700; color: #1e3a8a; margin: 20px 0 12px 0; padding-bottom: 6px; border-bottom: 2px solid #e2e8f0;"">&#9888;&#65039; 2. Balance y Conteo de Pendientes</div>")
         sb.AppendLine("    <table role=""presentation"" border=""0"" cellpadding=""0"" cellspacing=""0"" width=""100%"" bgcolor=""#ffffff"" class=""data-table"" style=""width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 18px; background-color: #ffffff;"">")
