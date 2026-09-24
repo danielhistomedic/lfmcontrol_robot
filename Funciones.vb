@@ -805,7 +805,36 @@ valida_cantidad_2:
 
 #End Region
 
+#Region "Cálculo de Días Hábiles"
 
+    ''' <summary>
+    ''' Calcula la cantidad de días hábiles transcurridos entre dos fechas (lunes a viernes, excluyendo sábados y domingos).
+    ''' </summary>
+    ''' <param name="fechaInicio">Fecha inicial o de referencia.</param>
+    ''' <param name="fechaFin">Fecha final de evaluación (por defecto, DateTime.Now).</param>
+    ''' <returns>Número entero de días hábiles transcurridos (>= 0). Si fechaInicio >= fechaFin retorna 0.</returns>
+    Public Shared Function CalcularDiasHabiles(ByVal fechaInicio As DateTime, Optional ByVal fechaFin As Nullable(Of DateTime) = Nothing) As Integer
+        Dim dInicio As DateTime = fechaInicio.Date
+        Dim dFin As DateTime = If(fechaFin.HasValue, fechaFin.Value.Date, DateTime.Now.Date)
+
+        If dInicio >= dFin Then
+            Return 0
+        End If
+
+        Dim diasHabiles As Integer = 0
+        Dim fechaActual As DateTime = dInicio.AddDays(1)
+
+        While fechaActual <= dFin
+            If fechaActual.DayOfWeek <> DayOfWeek.Saturday AndAlso fechaActual.DayOfWeek <> DayOfWeek.Sunday Then
+                diasHabiles += 1
+            End If
+            fechaActual = fechaActual.AddDays(1)
+        End While
+
+        Return diasHabiles
+    End Function
+
+#End Region
 
 End Class
 
@@ -1636,7 +1665,6 @@ Public Class EnviarCorreos
         Return True
 
     End Function
-
 
 
 #End Region

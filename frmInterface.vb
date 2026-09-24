@@ -3857,6 +3857,17 @@ intenta_otravz:
 #Region "Notificaciones Cotizaciones Pendientes Compras"
 
     ''' <summary>
+    ''' Calcula la cantidad de días hábiles transcurridos entre dos fechas (lunes a viernes, excluyendo sábados y domingos).
+    ''' Centraliza el cálculo de días transcurridos para notificaciones de compras y cotizaciones.
+    ''' </summary>
+    ''' <param name="fechaInicio">Fecha inicial o de referencia.</param>
+    ''' <param name="fechaFin">Fecha final de corte (por defecto, DateTime.Now).</param>
+    ''' <returns>Días hábiles transcurridos (>= 0).</returns>
+    Public Function CalcularDiasHabiles(ByVal fechaInicio As DateTime, Optional ByVal fechaFin As Nullable(Of DateTime) = Nothing) As Integer
+        Return Funciones.CalcularDiasHabiles(fechaInicio, fechaFin)
+    End Function
+
+    ''' <summary>
     ''' Rutina automática para notificar al personal de compras las partidas pendientes de cotizar de FLOWserve.
     ''' Ocurre de lunes a viernes (omitiendo sábados y domingos).
     ''' </summary>
@@ -4000,8 +4011,8 @@ intenta_otravz:
                     Return
                 End If
 
-                ' B. Validar si ya transcurrieron los días requeridos por la frecuencia configurada
-                Dim diasTranscurridos As Integer = CInt(Math.Floor((DateTime.Now.Date - fechaUltimaNotif.Value.Date).TotalDays))
+                ' B. Validar si ya transcurrieron los días requeridos por la frecuencia configurada (en días hábiles)
+                Dim diasTranscurridos As Integer = CalcularDiasHabiles(fechaUltimaNotif.Value, DateTime.Now)
                 If diasTranscurridos < frecuenciaDias Then
                     ' Aún no transcurren los días requeridos por la frecuencia
                     Return
@@ -4193,7 +4204,7 @@ intenta_otravz:
         Dim solsConFecha = dicSolsPartidas.Values.Where(Function(s) s.Item3.HasValue).OrderBy(Function(s) s.Item3.Value).ToList()
         If solsConFecha.Count > 0 Then
             Dim oldest = solsConFecha(0)
-            maxDiasAntig = CInt(Math.Floor((DateTime.Now.Date - oldest.Item3.Value.Date).TotalDays))
+            maxDiasAntig = CalcularDiasHabiles(oldest.Item3.Value, DateTime.Now)
             solMasAntiguaFolio = oldest.Item1
             fechaMasAntiguaStr = oldest.Item3.Value.ToString("dd/MM/yyyy")
         End If
@@ -4203,7 +4214,7 @@ intenta_otravz:
 
         Dim solsMas10Dias As Integer = 0
         For Each s In dicSolsPartidas.Values
-            If s.Item3.HasValue AndAlso (DateTime.Now.Date - s.Item3.Value.Date).TotalDays >= 10 Then
+            If s.Item3.HasValue AndAlso CalcularDiasHabiles(s.Item3.Value, DateTime.Now) >= 10 Then
                 solsMas10Dias += 1
             End If
         Next
@@ -7029,10 +7040,9 @@ intenta_otravz:
                 item.FechaRegistro = DateTime.Now
             End If
 
-            ' Cálculo del tiempo transcurrido en relación a la fecha de proyecto de venta
+            ' Cálculo del tiempo transcurrido en días hábiles (lunes a viernes) en relación a la fecha de proyecto de venta
             Dim fechaBase As DateTime = If(item.FechaProyecto.HasValue, item.FechaProyecto.Value, item.FechaRegistro)
-            Dim dTrans As Integer = CInt(Math.Floor((DateTime.Now.Date - fechaBase.Date).TotalDays))
-            If dTrans < 0 Then dTrans = 0
+            Dim dTrans As Integer = CalcularDiasHabiles(fechaBase, DateTime.Now)
             item.DiasTranscurridos = dTrans
 
             ' =========================================================
