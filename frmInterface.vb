@@ -6784,6 +6784,31 @@ intenta_otravz:
     End Class
 
     ''' <summary>
+    ''' Pedido de cliente y estado de sus órdenes de compra a proveedor válidas.
+    ''' </summary>
+    Public Class ItemPedidoClienteSeguimientoCompras
+        Public Property PedidoClienteId As Integer
+        Public Property NumeroOrdenCompra As String
+        Public Property ProyectoId As String
+        Public Property ClienteNombre As String
+        Public Property FechaPedido As Nullable(Of DateTime)
+        Public Property TotalMonto As Double
+        Public Property MonedaSiglas As String
+        Public Property FoliosOcpFinalizadas As New List(Of String)()
+        Public Property TieneOcpEnProceso As Boolean
+
+        Public ReadOnly Property EstadoOCProveedor As String
+            Get
+                If FoliosOcpFinalizadas.Count > 0 Then
+                    Return "SI, Folio(s): " & String.Join(", ", FoliosOcpFinalizadas)
+                End If
+                If TieneOcpEnProceso Then Return "EN PROCESO DE ELABORACIÓN"
+                Return "PENDIENTE DE ELABORAR"
+            End Get
+        End Property
+    End Class
+
+    ''' <summary>
     ''' Resumen agrupado para el reporte de compras (FLOWSERVE o DIVERSOS).
     ''' </summary>
     Public Class ResumenComprasSeguimiento
@@ -6791,6 +6816,7 @@ intenta_otravz:
         Public Property Destinatarios As String
         Public Property OportunidadesSinSolicitud As New List(Of ItemOportunidadSeguimientoCompras)()
         Public Property OportunidadesEnCotizacion As New List(Of ItemOportunidadSeguimientoCompras)()
+        Public Property PedidosCliente As New List(Of ItemPedidoClienteSeguimientoCompras)()
 
         Public ReadOnly Property TotalOportunidades As Integer
             Get
@@ -6922,10 +6948,11 @@ intenta_otravz:
 
             ' 3. Consultar y construir resumen de oportunidades en proceso de cotización
             Dim resumen As ResumenComprasSeguimiento = ObtenerResumenOportunidadesCompras(tipoGrupo, clasificacionesIds)
+            resumen.PedidosCliente = ObtenerPedidosClienteSeguimientoCompras(clasificacionesIds)
             resumen.Destinatarios = destinatarios
 
-            If resumen.TotalOportunidades = 0 Then
-                LogEventos.Escribir(String.Format("[Seguimiento Compras - {0}] No hay oportunidades de venta pendientes de cotizar a partir del 24/08/2026.", tipoGrupo))
+            If resumen.TotalOportunidades = 0 AndAlso resumen.PedidosCliente.Count = 0 Then
+                LogEventos.Escribir(String.Format("[Seguimiento Compras - {0}] No hay oportunidades ni pedidos de cliente para reportar a partir del 24/08/2026.", tipoGrupo))
                 Return
             End If
 
@@ -7107,6 +7134,78 @@ intenta_otravz:
     End Function
 
     ''' <summary>
+    ''' Obtiene todos los pedidos de cliente del grupo y sus OCP no canceladas en una sola consulta.
+    ''' </summary>
+    Private Function ObtenerPedidosClienteSeguimientoCompras(ByVal clasificacionesIds As Integer()) As List(Of ItemPedidoClienteSeguimientoCompras)
+        Dim pedidos As New List(Of ItemPedidoClienteSeguimientoCompras)()
+        Dim pedidosPorId As New Dictionary(Of Integer, ItemPedidoClienteSeguimientoCompras)()
+        Dim parametrosClasificacion As New List(Of String)()
+
+        Using cmm As New MySqlConnector.MySqlCommand()
+            cmm.Connection = cx_MySQL_local
+            For i As Integer = 0 To clasificacionesIds.Length - 1
+                Dim nombreParametro As String = "@clasif" & i
+                parametrosClasificacion.Add(nombreParametro)
+                cmm.Parameters.AddWithValue(nombreParametro, clasificacionesIds(i))
+            Next
+
+            cmm.CommandText = _
+                "SELECT pc.id AS pedido_cliente_id, COALESCE(pc.num_orden_compra, '') AS num_orden_compra, " & _
+                "  pc.fecha_pedido, COALESCE(pc.total, 0) AS total_monto, " & _
+                "  COALESCE(tc.siglas, 'USD') AS moneda_siglas, " & _
+                "  COALESCE(v.proyecto_id, '') AS proyecto_id, " & _
+                "  COALESCE(cli.nombre_comercial, cli.razon_social, 'CLIENTE NO DEFINIDO') AS cliente_nombre, " & _
+                "  pp.id AS ocp_id, pp.enviado AS ocp_enviado, COALESCE(pp.folio_ocp, '') AS folio_ocp " & _
+                "FROM tb_pedidos_cliente pc " & _
+                "INNER JOIN tb_ventas v ON pc.venta_id = v.id " & _
+                "LEFT JOIN cat_clientes cli ON v.cliente_id = cli.id " & _
+                "LEFT JOIN cat_tipos_cambio tc ON pc.moneda_id = tc.id " & _
+                "LEFT JOIN tb_pedidos_proveedor pp ON pp.pedido_cliente_id = pc.id AND pp.enviado IN (0, 1) " & _
+                "WHERE v.activo = 'ACTIVO' " & _
+                "  AND v.estatus_proyecto_id <> 2 " & _
+                "  AND v.fecha >= '2026-08-24' " & _
+                "  AND v.clasificacion_proyecto_id IN (" & String.Join(",", parametrosClasificacion) & ") " & _
+                "ORDER BY pc.fecha_pedido ASC, pc.id ASC, pp.id ASC;"
+
+            Dim dt As New DataTable()
+            Using da As New MySqlConnector.MySqlDataAdapter(cmm)
+                da.Fill(dt)
+            End Using
+
+            For Each r As DataRow In dt.Rows
+                Dim pedidoId As Integer = Convert.ToInt32(r("pedido_cliente_id"))
+                Dim pedido As ItemPedidoClienteSeguimientoCompras = Nothing
+                If Not pedidosPorId.TryGetValue(pedidoId, pedido) Then
+                    pedido = New ItemPedidoClienteSeguimientoCompras()
+                    pedido.PedidoClienteId = pedidoId
+                    pedido.NumeroOrdenCompra = r("num_orden_compra").ToString().Trim()
+                    pedido.ProyectoId = r("proyecto_id").ToString().Trim()
+                    pedido.ClienteNombre = r("cliente_nombre").ToString().Trim()
+                    pedido.TotalMonto = Convert.ToDouble(r("total_monto"))
+                    pedido.MonedaSiglas = r("moneda_siglas").ToString().Trim()
+                    If Not IsDBNull(r("fecha_pedido")) Then
+                        pedido.FechaPedido = Convert.ToDateTime(r("fecha_pedido"))
+                    End If
+                    pedidosPorId.Add(pedidoId, pedido)
+                    pedidos.Add(pedido)
+                End If
+
+                If Not IsDBNull(r("ocp_id")) Then
+                    Dim estadoOcp As Integer = Convert.ToInt32(r("ocp_enviado"))
+                    If estadoOcp = 1 Then
+                        Dim folio As String = r("folio_ocp").ToString().Trim()
+                        pedido.FoliosOcpFinalizadas.Add(If(String.IsNullOrWhiteSpace(folio), "(sin folio)", folio))
+                    ElseIf estadoOcp = 0 Then
+                        pedido.TieneOcpEnProceso = True
+                    End If
+                End If
+            Next
+        End Using
+
+        Return pedidos
+    End Function
+
+    ''' <summary>
     ''' Genera la tarjeta HTML individual para una oportunidad de compra, con diseño idéntico a la imagen provista.
     ''' </summary>
     Private Function GenerarTarjetaSeguimientoComprasHtml(ByVal item As ItemOportunidadSeguimientoCompras) As String
@@ -7136,6 +7235,31 @@ intenta_otravz:
         sb.AppendLine(String.Format("        &bull; <strong>Qué está pendiente:</strong> <span style=""color: {0}; font-weight: 600;"">{1}</span><br/>", If(item.Semaforo = "ROJO", "#991b1b", If(item.Semaforo = "AMARILLO", "#a16207", "#15803d")), System.Net.WebUtility.HtmlEncode(item.QueEstaPendiente)))
         sb.AppendLine(String.Format("        &bull; <strong>Quién es responsable:</strong> <span style=""color: #0f172a; font-weight: 600;"">{0}</span><br/>", System.Net.WebUtility.HtmlEncode(item.Responsable)))
         sb.AppendLine(String.Format("        &bull; <strong>Acción recomendada:</strong> <span style=""color: #1e3a8a; font-weight: 600;"">{0}</span>", System.Net.WebUtility.HtmlEncode(item.ProximaAccion)))
+        sb.AppendLine("      </div>")
+        sb.AppendLine("    </div>")
+
+        Return sb.ToString()
+    End Function
+
+    ''' <summary>
+    ''' Genera la tarjeta de un pedido de cliente y el estado de sus OCP.
+    ''' </summary>
+    Private Function GenerarTarjetaPedidoClienteComprasHtml(ByVal pedido As ItemPedidoClienteSeguimientoCompras) As String
+        Dim tieneOcpFinalizada As Boolean = pedido.FoliosOcpFinalizadas.Count > 0
+        Dim colorBorde As String = If(tieneOcpFinalizada, "#16a34a", If(pedido.TieneOcpEnProceso, "#d97706", "#dc2626"))
+        Dim colorFondo As String = If(tieneOcpFinalizada, "#f0fdf4", If(pedido.TieneOcpEnProceso, "#fffbeb", "#fff1f2"))
+        Dim sb As New System.Text.StringBuilder()
+
+        sb.AppendLine(String.Format("    <div class=""card-prio"" style=""border-left: 5px solid {0}; background-color: {1}; padding: 12px 16px; margin-bottom: 12px; border-radius: 4px; border-top: 1px solid #e2e8f0; border-right: 1px solid #e2e8f0; border-bottom: 1px solid #e2e8f0;"">", colorBorde, colorFondo))
+        sb.AppendLine(String.Format("      <div style=""font-size: 13px; font-weight: 700; color: #0f172a;"">Pedido de Cliente: <span style=""font-family: Consolas, monospace;"">{0}</span> &bull; {1}</div>", _
+                                    System.Net.WebUtility.HtmlEncode(If(String.IsNullOrWhiteSpace(pedido.NumeroOrdenCompra), pedido.PedidoClienteId.ToString(), pedido.NumeroOrdenCompra)), _
+                                    System.Net.WebUtility.HtmlEncode(pedido.ClienteNombre)))
+        sb.AppendLine(String.Format("      <div class=""card-prio-meta"" style=""font-size: 11px; color: #475569; line-height: 1.5; margin-top: 5px;"">&bull; <strong>Proyecto:</strong> {0}<br/>", System.Net.WebUtility.HtmlEncode(pedido.ProyectoId)))
+        If pedido.FechaPedido.HasValue Then
+            sb.AppendLine(String.Format("        &bull; <strong>Fecha del pedido:</strong> {0:dd/MM/yyyy}<br/>", pedido.FechaPedido.Value))
+        End If
+        sb.AppendLine(String.Format("        &bull; <strong>Monto:</strong> {0:N2} {1}<br/>", pedido.TotalMonto, System.Net.WebUtility.HtmlEncode(pedido.MonedaSiglas)))
+        sb.AppendLine(String.Format("        &bull; <strong>OCProveedor:</strong> <span style=""color: {0}; font-weight: 700;"">{1}</span>", colorBorde, System.Net.WebUtility.HtmlEncode(pedido.EstadoOCProveedor)))
         sb.AppendLine("      </div>")
         sb.AppendLine("    </div>")
 
@@ -7248,6 +7372,22 @@ intenta_otravz:
         Else
             For Each itm In resumen.OportunidadesEnCotizacion
                 sb.Append(GenerarTarjetaSeguimientoComprasHtml(itm))
+            Next
+        End If
+
+        sb.AppendLine("")
+        sb.AppendLine("              <!-- ========================================================================= -->")
+        sb.AppendLine("              <!-- 3. ÓRDENES DE COMPRA PENDIENTES DE ORDEN DE COMPRA A PROVEEDOR             -->")
+        sb.AppendLine("              <!-- ========================================================================= -->")
+        sb.AppendLine(String.Format("              <div class=""sec-heading"" style=""font-size: 15px; font-weight: 700; color: #1e3a8a; margin: 24px 0 6px 0; padding-bottom: 6px; border-bottom: 2px solid #e2e8f0;"">&#128196; 3. Órdenes de compra pendientes de Orden de Compra a Proveedor ({0})</div>", resumen.PedidosCliente.Count))
+        sb.AppendLine("              <p class=""sec-subtext"" style=""font-size: 12px; color: #64748b; margin: 0 0 14px 0;"">Estado de las órdenes de compra a proveedor asociadas a cada pedido de cliente. Las OCP canceladas se omiten.</p>")
+        sb.AppendLine("")
+
+        If resumen.PedidosCliente.Count = 0 Then
+            sb.AppendLine("              <div style=""font-size: 12px; color: #166534; background-color: #dcfce7; border: 1px solid #86efac; padding: 12px; border-radius: 6px; margin-bottom: 18px;"">&#10004; No hay pedidos de cliente para este grupo.</div>")
+        Else
+            For Each pedido In resumen.PedidosCliente
+                sb.Append(GenerarTarjetaPedidoClienteComprasHtml(pedido))
             Next
         End If
 
